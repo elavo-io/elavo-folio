@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: registry.fedoraproject.org/fedora:44
+    steps:
+      - name: Install build dependencies
+        run: >
+          dnf5 install -y git gtk4-devel gtk4-layer-shell-devel wayland-devel
+          rust cargo clippy rustfmt gcc pkgconf-pkg-config
+      - uses: actions/checkout@v4
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Release build
+        run: cargo build --release --workspace

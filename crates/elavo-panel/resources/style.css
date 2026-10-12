@@ -1,0 +1,49 @@
+/* Stand-in look until the Elavo GTK theme ships. Loaded at application
+   priority, so it beats the theme: move each rule into the theme and delete
+   it here. Keep the class names stable. */
+
+window.elavo-panel {
+  background: transparent;
+}
+
+.elavo-panel-bar {
+  min-height: 28px;
+  padding: 0 10px;
+  background-color: alpha(@theme_bg_color, 0.78);
+  color: @theme_fg_color;
+  font-size: 13px;
+}
+
+.elavo-panel-bar button {
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0 8px;
+  margin: 3px 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  box-shadow: none;
+}
+
+.elavo-panel-bar button:hover {
+  background-color: alpha(currentColor, 0.1);
+}
+
+.elavo-panel-bar button:checked,
+.elavo-panel-bar button:active {
+  background-color: alpha(currentColor, 0.16);
+}
+
+.elavo-panel-clock {
+  font-weight: 500;
+  font-feature-settings: "tnum";
+}
+
+.elavo-panel-status {
+  margin-right: 8px;
+}
+
+.elavo-panel-menu-popover menu,
+.elavo-panel-menu-popover contents {
+  min-width: 220px;
+}

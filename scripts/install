@@ -1,0 +1,14 @@
+#!/bin/sh
+# Install a release build. Run `cargo build --release` first.
+# Honors DESTDIR and PREFIX (default /usr). The image build calls this.
+set -eu
+
+cd "$(dirname "$0")/.."
+prefix="${PREFIX:-/usr}"
+dest="${DESTDIR:-}"
+
+for bin in elavo-panel elavo-dock elavo-lens; do
+    install -Dm755 "target/release/${bin}" "${dest}${prefix}/bin/${bin}"
+    install -Dm644 "data/systemd/user/${bin}.service" \
+        "${dest}${prefix}/lib/systemd/user/${bin}.service"
+done

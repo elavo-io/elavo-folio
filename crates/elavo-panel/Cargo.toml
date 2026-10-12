@@ -1,0 +1,13 @@
+[package]
+name = "elavo-panel"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+gtk.workspace = true
+gtk4-layer-shell.workspace = true
+elavo-common.workspace = true
+
+[build-dependencies]
+glib-build-tools.workspace = true

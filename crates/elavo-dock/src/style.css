@@ -1,0 +1,83 @@
+/* Stand-in look until the Elavo GTK theme ships. Loaded at application
+   priority, so it beats the theme: move each rule into the theme and delete
+   it here. Keep the class names stable. The dock places these widgets
+   itself, so padding and margins on them have no effect on layout. */
+
+window.elavo-dock {
+  background: transparent;
+}
+
+/* The dock shows where a drop lands itself; no drop-target outline. */
+elavo-dock-view:drop(active) {
+  box-shadow: none;
+  outline: none;
+}
+
+.elavo-dock-bar {
+  border-radius: 18px;
+  background-color: alpha(@theme_bg_color, 0.62);
+  border: 1px solid alpha(@theme_fg_color, 0.12);
+}
+
+.elavo-dock-dot {
+  min-width: 4px;
+  min-height: 4px;
+  border-radius: 2px;
+  background-color: alpha(@theme_fg_color, 0.8);
+}
+
+.elavo-dock-separator {
+  min-width: 1px;
+  min-height: 1px;
+  background-color: alpha(@theme_fg_color, 0.25);
+}
+
+.elavo-dock-label {
+  padding: 3px 10px;
+  border-radius: 7px;
+  background-color: alpha(@theme_bg_color, 0.92);
+  border: 1px solid alpha(@theme_fg_color, 0.12);
+  color: @theme_fg_color;
+}
+
+.elavo-dock-badge {
+  min-width: 12px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background-color: #e5372f;
+  color: white;
+  font-size: smaller;
+  font-weight: bold;
+}
+
+popover.elavo-dock-fan > contents {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+popover.elavo-dock-fan .elavo-dock-stack-item,
+popover.elavo-dock-fan .elavo-dock-stack-open {
+  padding: 0;
+  background: none;
+}
+
+popover.elavo-dock-fan .elavo-dock-stack-open {
+  margin-bottom: 4px;
+}
+
+popover.elavo-dock-fan .elavo-dock-stack-open > label {
+  padding: 3px 10px;
+  border-radius: 7px;
+  background-color: alpha(@theme_bg_color, 0.92);
+}
+
+popover.elavo-dock-fan .elavo-dock-stack-item:hover .elavo-dock-label {
+  background-color: @theme_selected_bg_color;
+  color: @theme_selected_fg_color;
+}
+
+.elavo-dock-stack-header {
+  padding: 2px 4px 4px;
+}

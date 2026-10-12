@@ -1,0 +1,9 @@
+[package]
+name = "elavo-common"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+gtk.workspace = true
+gio-unix.workspace = true

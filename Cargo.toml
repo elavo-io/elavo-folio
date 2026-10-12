@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/elavo-common",
+    "crates/elavo-panel",
+    "crates/elavo-dock",
+    "crates/elavo-dock-settings",
+    "crates/elavo-lens",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/elavo-io/elavo-shell"
+
+[workspace.dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+gtk4-layer-shell = "0.8"
+gio-unix = "0.22"
+glib-build-tools = "0.22"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+async-channel = "2"
+elavo-common = { path = "crates/elavo-common" }
+elavo-dock-settings = { path = "crates/elavo-dock-settings" }
+
+[profile.release]
+lto = "thin"
+strip = true

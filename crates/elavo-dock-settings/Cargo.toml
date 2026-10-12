@@ -1,0 +1,8 @@
+[package]
+name = "elavo-dock-settings"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+gtk.workspace = true

@@ -1,0 +1,113 @@
+/* Stand-in look until the Elavo GTK theme ships. Loaded at application
+   priority, so it beats the theme: move each rule into the theme and delete
+   it here. Keep the class names stable. */
+
+window.elavo-lens {
+  background: transparent;
+}
+
+.elavo-lens-column {
+  margin-top: 160px;
+}
+
+.elavo-lens-bar {
+  min-height: 54px;
+  padding: 0 10px 0 18px;
+  border-radius: 27px;
+  background-color: alpha(@theme_bg_color, 0.94);
+  color: @theme_fg_color;
+  box-shadow: 0 10px 40px alpha(black, 0.28), 0 0 0 1px alpha(@theme_fg_color, 0.08);
+}
+
+.elavo-lens-bar entry {
+  min-height: 48px;
+  font-size: 20px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.elavo-lens-bar button {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 18px;
+  background: none;
+  box-shadow: none;
+}
+
+.elavo-lens-bar button:hover {
+  background-color: alpha(@theme_fg_color, 0.08);
+}
+
+.elavo-lens-bar button:checked {
+  background-color: alpha(@theme_fg_color, 0.14);
+}
+
+.elavo-lens-results {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 22px;
+  background-color: alpha(@theme_bg_color, 0.96);
+  color: @theme_fg_color;
+  box-shadow: 0 10px 40px alpha(black, 0.28), 0 0 0 1px alpha(@theme_fg_color, 0.08);
+}
+
+.elavo-lens-results list {
+  background: none;
+}
+
+.elavo-lens-results row {
+  padding: 6px 10px;
+  border-radius: 10px;
+}
+
+.elavo-lens-results row:selected {
+  background-color: @theme_selected_bg_color;
+}
+
+.elavo-lens-results row:selected label {
+  color: @theme_selected_fg_color;
+}
+
+.elavo-lens-heading {
+  padding: 8px 10px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+.elavo-lens-title {
+  font-size: 15px;
+}
+
+.elavo-lens-calc {
+  font-size: 22px;
+  font-weight: 500;
+  font-feature-settings: "tnum";
+}
+
+.elavo-lens-subtitle {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.elavo-lens-grid flowboxchild {
+  padding: 10px 4px;
+  border-radius: 12px;
+}
+
+.elavo-lens-grid flowboxchild:selected,
+.elavo-lens-grid flowboxchild:hover {
+  background-color: alpha(@theme_fg_color, 0.1);
+}
+
+.elavo-lens-grid flowboxchild:selected label {
+  color: @theme_fg_color;
+}
+
+.elavo-lens-grid label {
+  font-size: 12px;
+}
