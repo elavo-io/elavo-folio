@@ -8,7 +8,6 @@ mod model;
 mod others;
 mod pins;
 mod stacks;
-mod toplevels;
 mod trash;
 mod view;
 
@@ -17,6 +16,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
+use elavo_common::toplevels::{self, Controller, Toplevel};
 use elavo_common::{AppEntry, AppIndex};
 use elavo_dock_settings::Settings;
 use gio_unix::prelude::*;
@@ -26,7 +26,6 @@ use wayland_client::backend::ObjectId;
 
 use model::{Item, Sections};
 use others::Other;
-use toplevels::{Controller, Toplevel};
 use view::{Bounce, DockView, Host, Intent, Payload, Section, Tile, TileIcon};
 
 const APP_ID: &str = "io.elavo.Dock";

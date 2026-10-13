@@ -39,6 +39,34 @@ window.elavo-panel {
   font-feature-settings: "tnum";
 }
 
+menubar.elavo-panel-appmenu {
+  padding: 0;
+  margin-left: 2px;
+  background: none;
+  box-shadow: none;
+}
+
+/* The application menu, named after the focused application. */
+menubar.elavo-panel-appmenu > item:first-child {
+  font-weight: 700;
+}
+
+menubar.elavo-panel-appmenu > item {
+  min-height: 22px;
+  padding: 0 8px;
+  margin: 3px 0;
+  border-radius: 6px;
+}
+
+menubar.elavo-panel-appmenu > item:hover {
+  background-color: alpha(currentColor, 0.1);
+}
+
+menubar.elavo-panel-appmenu > item:selected {
+  background-color: alpha(currentColor, 0.16);
+  color: inherit;
+}
+
 .elavo-panel-status {
   margin-right: 8px;
 }

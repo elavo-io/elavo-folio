@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use wayland_client::backend::ObjectId;
+pub use wayland_client::backend::ObjectId;
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
@@ -22,6 +22,8 @@ pub struct Toplevel {
     pub title: String,
     pub activated: bool,
     pub minimized: bool,
+    pub maximized: bool,
+    pub fullscreen: bool,
 }
 
 pub enum Event {
@@ -52,6 +54,30 @@ impl Controller {
         toplevel.handle.close();
         let _ = self.conn.flush();
     }
+
+    /// Unminimize without raising. Used by Show All.
+    pub fn restore(&self, toplevel: &Toplevel) {
+        toplevel.handle.unset_minimized();
+        let _ = self.conn.flush();
+    }
+
+    pub fn toggle_maximized(&self, toplevel: &Toplevel) {
+        if toplevel.maximized {
+            toplevel.handle.unset_maximized();
+        } else {
+            toplevel.handle.set_maximized();
+        }
+        let _ = self.conn.flush();
+    }
+
+    pub fn toggle_fullscreen(&self, toplevel: &Toplevel) {
+        if toplevel.fullscreen {
+            toplevel.handle.unset_fullscreen();
+        } else {
+            toplevel.handle.set_fullscreen(None);
+        }
+        let _ = self.conn.flush();
+    }
 }
 
 struct State {
@@ -60,8 +86,10 @@ struct State {
 }
 
 // zwlr_foreign_toplevel_handle_v1.state values.
+const STATE_MAXIMIZED: u32 = 0;
 const STATE_MINIMIZED: u32 = 1;
 const STATE_ACTIVATED: u32 = 2;
+const STATE_FULLSCREEN: u32 = 3;
 
 pub fn start() -> Result<(Controller, async_channel::Receiver<Event>), String> {
     let conn = Connection::connect_to_env().map_err(|e| e.to_string())?;
@@ -136,6 +164,8 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for State {
                     title: String::new(),
                     activated: false,
                     minimized: false,
+                    maximized: false,
+                    fullscreen: false,
                 },
             );
         }
@@ -184,6 +214,8 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for State {
                             .collect();
                         toplevel.activated = values.contains(&STATE_ACTIVATED);
                         toplevel.minimized = values.contains(&STATE_MINIMIZED);
+                        toplevel.maximized = values.contains(&STATE_MAXIMIZED);
+                        toplevel.fullscreen = values.contains(&STATE_FULLSCREEN);
                     }
                     _ => {}
                 }

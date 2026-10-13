@@ -12,3 +12,8 @@ for bin in elavo-panel elavo-dock elavo-lens; do
     install -Dm644 "data/systemd/user/${bin}.service" \
         "${dest}${prefix}/lib/systemd/user/${bin}.service"
 done
+
+# Nautilus 50 loads extensions only from <libdir>/nautilus/extensions-4.
+make -C extensions/nautilus-folio
+install -Dm755 extensions/nautilus-folio/libfolio-files.so \
+    "${dest}${prefix}/lib64/nautilus/extensions-4/libfolio-files.so"

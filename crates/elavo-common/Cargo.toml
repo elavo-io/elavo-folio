@@ -7,3 +7,6 @@ repository.workspace = true
 [dependencies]
 gtk.workspace = true
 gio-unix.workspace = true
+wayland-client.workspace = true
+wayland-protocols-wlr.workspace = true
+async-channel.workspace = true

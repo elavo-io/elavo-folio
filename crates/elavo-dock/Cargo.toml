@@ -9,7 +9,5 @@ gtk.workspace = true
 gtk4-layer-shell.workspace = true
 gio-unix.workspace = true
 wayland-client.workspace = true
-wayland-protocols-wlr.workspace = true
-async-channel.workspace = true
 elavo-common.workspace = true
 elavo-dock-settings.workspace = true

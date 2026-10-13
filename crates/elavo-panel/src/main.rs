@@ -1,7 +1,10 @@
 //! The Elavo top panel. Spec: elavo-architecture-and-planning-internal,
 //! planning/desktop/top-panel.md.
 
+mod appmenu;
 mod clock;
+mod focus;
+mod folio;
 mod menu;
 mod status;
 
@@ -18,6 +21,7 @@ const HEIGHT: i32 = 28;
 struct Panel {
     app: gtk::Application,
     windows: RefCell<Vec<gtk::ApplicationWindow>>,
+    appmenu: Rc<appmenu::AppMenu>,
     clock: Rc<clock::Clock>,
     status: Rc<status::Status>,
 }
@@ -38,6 +42,7 @@ impl Panel {
         let panel = Rc::new(Self {
             app: app.clone(),
             windows: RefCell::default(),
+            appmenu: appmenu::AppMenu::new(),
             clock: clock::Clock::new(),
             status: status::Status::new(),
         });
@@ -85,9 +90,13 @@ impl Panel {
         window.auto_exclusive_zone_enable();
         window.set_keyboard_mode(KeyboardMode::None);
 
+        let start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        start.append(&menu::button(&window));
+        start.append(&self.appmenu.widget());
+
         let bar = gtk::CenterBox::builder()
             .css_classes(["elavo-panel-bar"])
-            .start_widget(&menu::button(&window))
+            .start_widget(&start)
             .center_widget(&self.clock.label())
             .end_widget(&self.status.widget())
             .build();

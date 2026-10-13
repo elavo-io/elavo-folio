@@ -94,22 +94,23 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 name = "elavo-common"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "gio-unix",
  "gtk4",
+ "wayland-client",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]
 name = "elavo-dock"
 version = "0.1.0"
 dependencies = [
- "async-channel",
  "elavo-common",
  "elavo-dock-settings",
  "gio-unix",
  "gtk4",
  "gtk4-layer-shell",
  "wayland-client",
- "wayland-protocols-wlr",
 ]
 
 [[package]]
