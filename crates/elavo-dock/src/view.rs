@@ -423,12 +423,16 @@ impl State {
     }
 
     /// Main start, cross start, and size of a tile's icon.
+    ///
+    /// A resting icon is centered in the shelf. Magnification grows it from
+    /// that top edge, toward the desktop. Bounce offsets from the center.
     fn icon_box(&self, t: &TileState) -> (f64, f64, f64) {
         let g = &self.geom;
         let z = g.size * t.scale * t.presence.value;
         let center = t.start + t.len / 2.0;
-        let v = g.margin + g.pad_low + t.bounce_off - self.hide_offset();
-        (center - z / 2.0, v, z)
+        let rest_z = g.size * t.presence.value;
+        let rest_v = g.margin + (g.thickness() - rest_z) / 2.0 - self.hide_offset();
+        (center - z / 2.0, rest_v + t.bounce_off, z)
     }
 
     fn icon_rect(&self, t: &TileState) -> graphene::Rect {
@@ -556,7 +560,7 @@ impl Section {
 }
 
 mod imp {
-    use std::cell::{OnceCell, RefCell};
+    use std::cell::{Cell, OnceCell, RefCell};
     use std::rc::Weak;
 
     use std::collections::HashMap;
@@ -575,6 +579,8 @@ mod imp {
         /// because drawing fills it while `state` is borrowed.
         pub icons: RefCell<HashMap<(String, i32), gtk::IconPaintable>>,
         pub shelf: OnceCell<gtk::Box>,
+        pub radius_css: OnceCell<gtk::CssProvider>,
+        pub radius_px: Cell<i32>,
         pub label: OnceCell<gtk::Label>,
         pub tick: RefCell<Option<gtk::TickCallbackId>>,
     }
@@ -597,6 +603,15 @@ mod imp {
             let shelf = gtk::Box::builder().css_classes(["elavo-dock-bar"]).build();
             shelf.set_parent(&*obj);
             self.shelf.set(shelf).expect("constructed once");
+            let radius_css = gtk::CssProvider::new();
+            if let Some(display) = gtk::gdk::Display::default() {
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &radius_css,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+            self.radius_css.set(radius_css).expect("constructed once");
             let label = gtk::Label::builder()
                 .css_classes(["elavo-dock-label"])
                 .opacity(0.0)
@@ -773,6 +788,20 @@ impl DockView {
         });
         window.present();
         (window, view)
+    }
+
+    /// `0.35 × thickness` (`21/60`). CSS cannot see the widget size.
+    fn set_shelf_radius(&self, thickness: f64) {
+        let radius = (thickness * 21.0 / 60.0).round() as i32;
+        if radius <= 0 || self.imp().radius_px.get() == radius {
+            return;
+        }
+        self.imp().radius_px.set(radius);
+        if let Some(css) = self.imp().radius_css.get() {
+            css.load_from_string(&format!(
+                ".elavo-dock-bar {{ border-radius: {radius}px; }}"
+            ));
+        }
     }
 
     fn configure_surface(&self, window: &gtk::ApplicationWindow) {
@@ -1006,29 +1035,26 @@ impl DockView {
         let hide = state.hide_offset();
         if let Some(shelf) = imp.shelf.get() {
             let (lo, hi) = state.shelf;
+            let thickness = g.thickness();
             place(
                 shelf.upcast_ref(),
-                &state.to_rect(lo, g.margin - hide, (hi - lo).max(0.0), g.thickness()),
+                &state.to_rect(lo, g.margin - hide, (hi - lo).max(0.0), thickness),
             );
+            self.set_shelf_radius(thickness);
         }
         for t in &state.tiles {
             let center = t.start + t.len / 2.0;
             if let Some(divider) = &t.divider {
-                let inset = g.pad_low * 0.6;
-                let length = g.thickness() - inset - g.pad_high * 0.6;
-                let thickness = if g.position.vertical() {
-                    divider.preferred_size().1.height()
-                } else {
-                    divider.preferred_size().1.width()
-                }
-                .max(1) as f64;
+                let inset = (g.pad_low + g.pad_high) / 2.0 * 0.6;
+                let length = (g.thickness() - inset * 2.0) * t.presence.value;
+                let line = 1.0;
                 place(
                     divider.upcast_ref(),
                     &state.to_rect(
-                        center - thickness / 2.0,
+                        center - line / 2.0,
                         g.margin + inset - hide,
-                        thickness,
-                        length * t.presence.value,
+                        line,
+                        length,
                     ),
                 );
             }

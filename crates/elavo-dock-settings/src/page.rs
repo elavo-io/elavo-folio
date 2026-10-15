@@ -347,6 +347,7 @@ pub fn window(app: &gtk::Application) -> gtk::Window {
     let window = gtk::Window::builder()
         .application(app)
         .title("Dock Settings")
+        .titlebar(&gtk::HeaderBar::new())
         .default_width(560)
         .resizable(true)
         .child(&scrolled)

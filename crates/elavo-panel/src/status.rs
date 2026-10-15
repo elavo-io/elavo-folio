@@ -69,8 +69,33 @@ impl Status {
         row.append(&self.network.image());
         row.append(&self.volume.image());
         row.append(&self.battery.image());
+        row.append(&search_button());
         row
     }
+}
+
+/// Toggles Lens, the same action as Super+Space. The glyph is ysUI
+/// `edit-find` until an Elavo icon exists.
+fn search_button() -> gtk::Button {
+    let icon = gtk::Image::builder()
+        .icon_name("edit-find-symbolic")
+        .pixel_size(16)
+        .build();
+    let button = gtk::Button::builder()
+        .css_classes(["elavo-panel-lens"])
+        .child(&icon)
+        .tooltip_text("Search")
+        .build();
+    button.connect_clicked(|_| {
+        let argv: Vec<&std::ffi::OsStr> = ["elavo-lens", "--toggle"]
+            .iter()
+            .map(std::ffi::OsStr::new)
+            .collect();
+        if let Err(err) = gio::Subprocess::newv(&argv, gio::SubprocessFlags::NONE) {
+            glib::g_warning!("elavo-panel", "lens: {err}");
+        }
+    });
+    button
 }
 
 async fn system_proxy(name: &str, path: &str, interface: &str) -> Option<gio::DBusProxy> {

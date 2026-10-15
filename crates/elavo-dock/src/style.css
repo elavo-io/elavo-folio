@@ -14,7 +14,6 @@ elavo-dock-view:drop(active) {
 }
 
 .elavo-dock-bar {
-  border-radius: 18px;
   background-color: alpha(@theme_bg_color, 0.62);
   border: 1px solid alpha(@theme_fg_color, 0.12);
 }
@@ -74,8 +73,8 @@ popover.elavo-dock-fan .elavo-dock-stack-open > label {
 }
 
 popover.elavo-dock-fan .elavo-dock-stack-item:hover .elavo-dock-label {
-  background-color: @theme_selected_bg_color;
-  color: @theme_selected_fg_color;
+  background-color: var(--accent-bg-color, @theme_selected_bg_color);
+  color: var(--accent-fg-color, @theme_selected_fg_color);
 }
 
 .elavo-dock-stack-header {

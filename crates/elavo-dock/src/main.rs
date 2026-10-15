@@ -17,7 +17,7 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use elavo_common::toplevels::{self, Controller, Toplevel};
-use elavo_common::{AppEntry, AppIndex};
+use elavo_common::{AppEntry, AppIndex, ABOUT_TITLE, PANEL_APP_ID};
 use elavo_dock_settings::Settings;
 use gio_unix::prelude::*;
 use gtk::prelude::*;
@@ -36,6 +36,8 @@ const APP_PREFIX: &str = "app:";
 const OTHER_PREFIX: &str = "other:";
 const WINDOW_PREFIX: &str = "window:";
 pub const TRASH_KEY: &str = "trash";
+/// About Elavo. Shown while that window is open, then dropped. Not a recent.
+pub const ABOUT_KEY: &str = "about";
 
 pub struct Dock {
     host: Rc<HostRef>,
@@ -201,7 +203,9 @@ impl Dock {
                                 self.index.replace(AppIndex::load());
                             }
                             list.push(toplevel.clone());
-                            self.touch_recent(&toplevel.app_id);
+                            if toplevel.app_id != PANEL_APP_ID {
+                                self.touch_recent(&toplevel.app_id);
+                            }
                             (false, false)
                         }
                     };
@@ -265,6 +269,7 @@ impl Dock {
         let minimized_at = self.minimized_at.borrow();
         let windows: Vec<model::Window<ObjectId>> = toplevels
             .iter()
+            .filter(|t| t.app_id != PANEL_APP_ID)
             .map(|t| model::Window {
                 key: t.key.clone(),
                 app_id: &t.app_id,
@@ -324,6 +329,9 @@ impl Dock {
             for item in &sections.recents {
                 tiles.push(self.app_tile(item, Section::Recents, &settings));
             }
+        }
+        if let Some(about) = self.about_tile(&settings) {
+            tiles.push(about);
         }
         tiles.push(Tile::divider(1));
         let folders = self.folders.borrow();
@@ -394,6 +402,36 @@ impl Dock {
             draggable: false,
         });
         tiles
+    }
+
+    fn about_window(&self) -> Option<Toplevel> {
+        self.toplevels
+            .borrow()
+            .iter()
+            .find(|t| t.app_id == PANEL_APP_ID && t.title == ABOUT_TITLE)
+            .cloned()
+    }
+
+    fn about_tile(&self, settings: &Settings) -> Option<Tile> {
+        if self.about_window().is_none() {
+            return None;
+        }
+        Some(Tile {
+            key: ABOUT_KEY.to_owned(),
+            section: Section::Apps,
+            icon: Some(TileIcon::Icon(
+                gio::FileIcon::new(&gio::File::for_uri(
+                    "resource:///io/elavo/Dock/elavo-folio-panel.png",
+                ))
+                .upcast(),
+            )),
+            label: "About Elavo".to_owned(),
+            indicator: settings.show_indicators,
+            badge: None,
+            progress: None,
+            bounce: Bounce::None,
+            draggable: false,
+        })
     }
 
     fn app_tile(&self, item: &Item<ObjectId>, section: Section, settings: &Settings) -> Tile {
@@ -769,7 +807,14 @@ impl Host for HostRef {
         let Some(dock) = self.rc() else {
             return;
         };
-        if let Some(item) = dock.item(key) {
+        if key == ABOUT_KEY {
+            let window = dock.about_window();
+            if let Some(window) = window {
+                if let Some(controller) = dock.controller() {
+                    controller.activate(&window);
+                }
+            }
+        } else if let Some(item) = dock.item(key) {
             dock.activate_app(&item);
         } else if let Some(other) = dock.other(key) {
             if dock.is_folder(&other.uri) {
@@ -941,6 +986,8 @@ fn parse_args(args: &[std::ffi::OsString]) -> Options {
 }
 
 fn main() -> glib::ExitCode {
+    gio::resources_register_include!("elavo-dock.gresource").expect("dock resources");
+
     let app = gtk::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)

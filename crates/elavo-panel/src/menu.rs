@@ -11,7 +11,7 @@ pub fn install_actions(app: &gtk::Application) {
         action.connect_activate(move |_, _| f());
         app.add_action(&action);
     };
-    add("about", show_about);
+    add("about", crate::about::show);
     add("sleep", || login1("Suspend"));
     add("restart", || {
         confirm("Restart now?", "Restart", || login1("Reboot"));
@@ -138,31 +138,3 @@ fn confirm(message: &'static str, accept: &'static str, then: fn()) {
     });
 }
 
-fn os_release() -> Vec<(String, String)> {
-    let text = std::fs::read_to_string("/etc/os-release")
-        .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
-        .unwrap_or_default();
-    text.lines()
-        .filter_map(|line| line.split_once('='))
-        .map(|(k, v)| (k.trim().to_owned(), v.trim().trim_matches('"').to_owned()))
-        .collect()
-}
-
-fn show_about() {
-    let release = os_release();
-    let get = |key: &str| {
-        release
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default()
-    };
-    let dialog = gtk::AboutDialog::builder()
-        .program_name("Elavo")
-        .logo_icon_name("elavo-sun-symbolic")
-        .version(get("VERSION"))
-        .comments(get("PRETTY_NAME"))
-        .modal(false)
-        .build();
-    dialog.present();
-}

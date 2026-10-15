@@ -12,3 +12,6 @@ gio-unix.workspace = true
 wayland-client.workspace = true
 elavo-common.workspace = true
 elavo-dock-settings.workspace = true
+
+[build-dependencies]
+glib-build-tools.workspace = true

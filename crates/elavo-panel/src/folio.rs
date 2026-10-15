@@ -698,7 +698,7 @@ impl Folio {
 
     fn run(&self, route: Route) {
         match route {
-            Route::About => about(),
+            Route::About => crate::about::show(),
             Route::Nautilus(action) => nautilus_action(action),
             Route::FileOp(method) => file_op(method),
             Route::Show(place) => {
@@ -755,17 +755,6 @@ impl Place {
             }
         }
     }
-}
-
-fn about() {
-    let dialog = gtk::AboutDialog::builder()
-        .program_name("Folio")
-        .logo_icon_name("elavo-sun-symbolic")
-        .version(env!("CARGO_PKG_VERSION"))
-        .comments("The Elavo desktop")
-        .modal(false)
-        .build();
-    dialog.present();
 }
 
 fn nautilus_action(action: &'static str) {

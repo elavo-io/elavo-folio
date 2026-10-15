@@ -8,7 +8,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 use crate::others::{Display, Sort, View};
-use crate::{files, trash, Dock, DockView, TRASH_KEY};
+use crate::{files, trash, Dock, DockView, ABOUT_KEY, TRASH_KEY};
 
 /// Builds a menu and the actions behind it under the `dock.` prefix.
 struct Menu {
@@ -155,6 +155,33 @@ pub fn show(dock: &Rc<Dock>, view: &DockView, key: &str) {
         menu.item("Close", move || {
             if let Some(c) = weak.upgrade().as_ref().and_then(|d| d.controller()) {
                 c.close(&window);
+            }
+        });
+        menu.popup(view, key);
+    } else if key == ABOUT_KEY {
+        let mut menu = menu;
+        let weak = Rc::downgrade(dock);
+        menu.item("Open", move || {
+            let Some(dock) = weak.upgrade() else {
+                return;
+            };
+            let Some(window) = dock.about_window() else {
+                return;
+            };
+            if let Some(controller) = dock.controller() {
+                controller.activate(&window);
+            }
+        });
+        let weak = Rc::downgrade(dock);
+        menu.item("Close", move || {
+            let Some(dock) = weak.upgrade() else {
+                return;
+            };
+            let Some(window) = dock.about_window() else {
+                return;
+            };
+            if let Some(controller) = dock.controller() {
+                controller.close(&window);
             }
         });
         menu.popup(view, key);

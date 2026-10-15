@@ -71,6 +71,55 @@ menubar.elavo-panel-appmenu > item:selected {
   margin-right: 8px;
 }
 
+.elavo-panel-bar button.elavo-panel-lens {
+  padding: 0;
+  min-width: 22px;
+  min-height: 22px;
+}
+
+window.elavo-about {
+  background-color: @theme_base_color;
+  color: @theme_fg_color;
+}
+
+window.elavo-about headerbar {
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
+.elavo-about-name {
+  font-family: Roboto, sans-serif;
+  font-weight: 900;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+
+.elavo-about-version,
+.elavo-about-muted {
+  font-family: Roboto, sans-serif;
+  font-size: 11px;
+  color: alpha(currentColor, 0.45);
+}
+
+.elavo-about-row {
+  font-family: Roboto, sans-serif;
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: -0.02em;
+  min-height: 16px;
+}
+
+.elavo-about-muted {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.elavo-about-muted a {
+  color: inherit;
+}
+
 .elavo-panel-menu-popover menu,
 .elavo-panel-menu-popover contents {
   min-width: 220px;

@@ -65,11 +65,11 @@ window.elavo-lens {
 }
 
 .elavo-lens-results row:selected {
-  background-color: @theme_selected_bg_color;
+  background-color: var(--accent-bg-color, @theme_selected_bg_color);
 }
 
 .elavo-lens-results row:selected label {
-  color: @theme_selected_fg_color;
+  color: var(--accent-fg-color, @theme_selected_fg_color);
 }
 
 .elavo-lens-heading {
