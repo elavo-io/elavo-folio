@@ -6,8 +6,8 @@
 use std::cell::RefCell;
 
 use elavo_common::ABOUT_TITLE;
-use gtk::prelude::*;
 use gtk::glib;
+use gtk::prelude::*;
 
 // The panel process owns this window, so Wayland reports `io.elavo.Panel`.
 // `ABOUT_TITLE` is a word joiner: nothing is drawn in the title bar, and
@@ -43,7 +43,9 @@ pub fn show() {
     let (_, height, _, _) = plate.measure(gtk::Orientation::Vertical, width);
     window.set_default_size(width, height);
     window.set_child(Some(&plate));
-    if let Some(app) = gtk::gio::Application::default().and_then(|app| app.downcast::<gtk::Application>().ok()) {
+    if let Some(app) =
+        gtk::gio::Application::default().and_then(|app| app.downcast::<gtk::Application>().ok())
+    {
         app.add_window(&window);
     }
     OPEN.with(|open| open.replace(Some(window.downgrade())));
@@ -256,8 +258,8 @@ fn image_id() -> (String, Option<String>) {
     let Some(deployment) = booted_deployment(&text) else {
         return ("unknown".into(), None);
     };
-    let Some(hex) = json_string(deployment, "container-image-reference-digest")
-        .and_then(|digest| {
+    let Some(hex) =
+        json_string(deployment, "container-image-reference-digest").and_then(|digest| {
             digest
                 .strip_prefix("sha256:")
                 .filter(|hex| hex.chars().all(|c| c.is_ascii_hexdigit()) && hex.len() >= 6)
@@ -276,9 +278,8 @@ fn image_id() -> (String, Option<String>) {
 
 /// The pretty-printed deployment object whose `"booted"` field is true.
 fn booted_deployment(text: &str) -> Option<&str> {
-    text.split("\n    {").find(|chunk| {
-        json_bool_true(chunk, "booted")
-    })
+    text.split("\n    {")
+        .find(|chunk| json_bool_true(chunk, "booted"))
 }
 
 fn find_key<'a>(object: &'a str, key: &str) -> Option<&'a str> {

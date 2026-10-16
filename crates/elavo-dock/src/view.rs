@@ -798,9 +798,7 @@ impl DockView {
         }
         self.imp().radius_px.set(radius);
         if let Some(css) = self.imp().radius_css.get() {
-            css.load_from_string(&format!(
-                ".elavo-dock-bar {{ border-radius: {radius}px; }}"
-            ));
+            css.load_from_string(&format!(".elavo-dock-bar {{ border-radius: {radius}px; }}"));
         }
     }
 
@@ -1050,12 +1048,7 @@ impl DockView {
                 let line = 1.0;
                 place(
                     divider.upcast_ref(),
-                    &state.to_rect(
-                        center - line / 2.0,
-                        g.margin + inset - hide,
-                        line,
-                        length,
-                    ),
+                    &state.to_rect(center - line / 2.0, g.margin + inset - hide, line, length),
                 );
             }
             let (_, natural) = t.dot.preferred_size();

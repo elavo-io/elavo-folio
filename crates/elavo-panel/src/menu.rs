@@ -25,9 +25,18 @@ pub fn install_actions(app: &gtk::Application) {
     });
 
     let settings = gio::SimpleAction::new("settings", None);
-    // Enabled when elavo-settings exists (phase 3).
-    settings.set_enabled(false);
+    settings.set_enabled(system_settings().is_some());
+    settings.connect_activate(|_, _| {
+        if let Some(info) = system_settings() {
+            elavo_common::launch(&info, None);
+        }
+    });
     app.add_action(&settings);
+}
+
+/// System Settings, when it is installed.
+fn system_settings() -> Option<elavo_common::DesktopAppInfo> {
+    elavo_common::DesktopAppInfo::new("io.elavo.SystemSettings.desktop")
 }
 
 fn model() -> gio::Menu {
@@ -137,4 +146,3 @@ fn confirm(message: &'static str, accept: &'static str, then: fn()) {
         }
     });
 }
-

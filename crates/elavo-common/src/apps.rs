@@ -90,6 +90,25 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
+/// This account's Applications folder.
+pub fn home_applications_dir() -> PathBuf {
+    glib::home_dir().join("Applications")
+}
+
+/// None for `Hidden=true` and for files that are not applications.
+fn entry(id: String, path: &Path) -> Option<AppEntry> {
+    let info = DesktopAppInfo::from_filename(path)?;
+    Some(AppEntry {
+        id,
+        name: info.display_name().to_string(),
+        generic_name: info.generic_name().map(|s| s.to_string()),
+        keywords: info.keywords().iter().map(|k| k.to_string()).collect(),
+        wm_class: info.startup_wm_class().map(|s| s.to_string()),
+        shown: info.should_show(),
+        info,
+    })
+}
+
 impl AppIndex {
     pub fn load() -> Self {
         let mut seen = HashSet::new();
@@ -101,20 +120,33 @@ impl AppIndex {
                 if !seen.insert(id.clone()) {
                     continue;
                 }
-                // None for Hidden=true and for files that are not applications.
-                let Some(info) = DesktopAppInfo::from_filename(&path) else {
-                    continue;
-                };
-                entries.push(AppEntry {
-                    id,
-                    name: info.display_name().to_string(),
-                    generic_name: info.generic_name().map(|s| s.to_string()),
-                    keywords: info.keywords().iter().map(|k| k.to_string()).collect(),
-                    wm_class: info.startup_wm_class().map(|s| s.to_string()),
-                    shown: info.should_show(),
-                    info,
-                });
+                entries.extend(entry(id, &path));
             }
+        }
+        entries.sort_by_key(|e| e.name.to_lowercase());
+        Self { entries }
+    }
+
+    /// The installs in the Applications folders: each `*.eapp` directory's
+    /// `launch.desktop`. Only this account's folder for now; the shared
+    /// folder joins once its path is decided.
+    pub fn load_applications_folders() -> Self {
+        let mut entries = Vec::new();
+        let Ok(read) = std::fs::read_dir(home_applications_dir()) else {
+            return Self { entries };
+        };
+        let mut dirs: Vec<PathBuf> = read
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "eapp"))
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let Some(stem) = dir.file_stem() else {
+                continue;
+            };
+            let id = format!("{}.desktop", stem.to_string_lossy());
+            entries.extend(entry(id, &dir.join("launch.desktop")));
         }
         entries.sort_by_key(|e| e.name.to_lowercase());
         Self { entries }

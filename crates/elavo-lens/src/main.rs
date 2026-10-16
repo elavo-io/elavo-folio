@@ -25,6 +25,25 @@ enum Action {
     Copy(String),
 }
 
+/// What System Settings' Lens pane chose in `elavo/lens.conf`: the
+/// Applications folders (the default) or every installed app. Until this
+/// account has an Applications folder, every installed app, so Lens is
+/// never empty.
+fn load_applications() -> AppIndex {
+    let file = glib::KeyFile::new();
+    let path = glib::user_config_dir().join("elavo/lens.conf");
+    let all = file
+        .load_from_file(&path, glib::KeyFileFlags::NONE)
+        .ok()
+        .and_then(|()| file.string("Lens", "Applications").ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("all"));
+    if all || !elavo_common::apps::home_applications_dir().is_dir() {
+        AppIndex::load()
+    } else {
+        AppIndex::load_applications_folders()
+    }
+}
+
 struct Lens {
     window: gtk::ApplicationWindow,
     column: gtk::Box,
@@ -491,7 +510,7 @@ impl Lens {
 
     fn show(&self, applications: bool) {
         self.apps
-            .replace(AppIndex::load().shown().cloned().collect());
+            .replace(load_applications().shown().cloned().collect());
         self.populate_grid();
         self.entry.set_text("");
         if self.apps_button.is_active() == applications {

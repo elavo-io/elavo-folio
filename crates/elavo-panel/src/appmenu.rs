@@ -718,13 +718,22 @@ async fn find_menus(app_id: &str, desktop_stem: Option<&str>, windows: usize) ->
 /// Lowercase names a registered process may go by for this window: the
 /// `app_id`, its last dotted part (`com.rtsoft.patchy` runs as `patchy`),
 /// the desktop file stem, and its `StartupWMClass`.
-fn process_names_for(app_id: &str, desktop_stem: Option<&str>, wm_class: Option<&str>) -> Vec<String> {
-    let mut names: Vec<String> = [Some(app_id), app_id.rsplit('.').next(), desktop_stem, wm_class]
-        .into_iter()
-        .flatten()
-        .filter(|n| !n.is_empty())
-        .map(str::to_lowercase)
-        .collect();
+fn process_names_for(
+    app_id: &str,
+    desktop_stem: Option<&str>,
+    wm_class: Option<&str>,
+) -> Vec<String> {
+    let mut names: Vec<String> = [
+        Some(app_id),
+        app_id.rsplit('.').next(),
+        desktop_stem,
+        wm_class,
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|n| !n.is_empty())
+    .map(str::to_lowercase)
+    .collect();
     names.dedup();
     names
 }

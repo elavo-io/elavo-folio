@@ -61,7 +61,10 @@ impl DbusMenu {
             None,
             gio::DBusSignalFlags::NONE,
             move |signal| {
-                if matches!(signal.signal_name, "LayoutUpdated" | "ItemsPropertiesUpdated") {
+                if matches!(
+                    signal.signal_name,
+                    "LayoutUpdated" | "ItemsPropertiesUpdated"
+                ) {
                     if let Some(menu) = weak.upgrade() {
                         menu.queue_reload();
                     }
@@ -198,8 +201,12 @@ impl DbusMenu {
                 _ => gio::SimpleAction::new(&name, None),
             };
             action.set_enabled(flag(&node.props, "enabled", true));
-            let (bus, sender, path, id) =
-                (self.bus.clone(), self.sender.clone(), self.path.clone(), node.id);
+            let (bus, sender, path, id) = (
+                self.bus.clone(),
+                self.sender.clone(),
+                self.path.clone(),
+                node.id,
+            );
             action.connect_activate(move |_, _| clicked(&bus, &sender, &path, id));
             actions.push(action);
             let item = gio::MenuItem::new(Some(&label), Some(&format!("app.{name}")));
@@ -271,7 +278,10 @@ fn flag(props: &glib::VariantDict, key: &str, default: bool) -> bool {
 /// The first `shortcut` combination as a GTK accelerator, shown beside the
 /// item. The application handles the key itself.
 fn accel(props: &glib::VariantDict) -> Option<String> {
-    let combos = props.lookup::<Vec<Vec<String>>>("shortcut").ok().flatten()?;
+    let combos = props
+        .lookup::<Vec<Vec<String>>>("shortcut")
+        .ok()
+        .flatten()?;
     let accel = to_accel(combos.first()?)?;
     gtk::accelerator_parse(&accel).is_some().then_some(accel)
 }
@@ -312,7 +322,10 @@ mod tests {
 
     #[test]
     fn shortcuts_become_accelerators() {
-        assert_eq!(to_accel(&keys(&["Control", "N"])).as_deref(), Some("<Control>n"));
+        assert_eq!(
+            to_accel(&keys(&["Control", "N"])).as_deref(),
+            Some("<Control>n")
+        );
         assert_eq!(
             to_accel(&keys(&["Control", "Shift", "S"])).as_deref(),
             Some("<Control><Shift>s")

@@ -735,7 +735,16 @@ impl Dock {
         self.refresh();
     }
 
+    /// System Settings' Desktop & Dock pane when it is installed, or the
+    /// dock's own settings window.
     pub fn open_settings(&self) {
+        if gio_unix::DesktopAppInfo::new("io.elavo.SystemSettings.desktop").is_some() {
+            let argv = ["elavo-system-settings", "--pane", "dock"].map(std::ffi::OsStr::new);
+            match gio::Subprocess::newv(&argv, gio::SubprocessFlags::NONE) {
+                Ok(_) => return,
+                Err(err) => glib::g_warning!("elavo-dock", "opening System Settings: {err}"),
+            }
+        }
         if let Some(window) = self.settings_window.upgrade() {
             window.present();
             return;

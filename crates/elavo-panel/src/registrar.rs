@@ -99,7 +99,13 @@ impl Registrar {
                 let Some(registrar) = weak.upgrade() else {
                     return;
                 };
-                registrar.call(&bus, sender.unwrap_or_default(), method, &params, invocation);
+                registrar.call(
+                    &bus,
+                    sender.unwrap_or_default(),
+                    method,
+                    &params,
+                    invocation,
+                );
             })
             .build();
         if let Err(err) = registered {
@@ -284,7 +290,9 @@ async fn exported_menus(bus: &gio::DBusConnection, sender: &str, root: &str) -> 
         .skip(1)
         .filter_map(|rest| rest.split_once('"'))
         .filter_map(|(name, _)| {
-            let number = u32::from_str_radix(name, 16).ok().or_else(|| name.parse().ok())?;
+            let number = u32::from_str_radix(name, 16)
+                .ok()
+                .or_else(|| name.parse().ok())?;
             Some((number, format!("{root}/{name}")))
         })
         .collect();
@@ -377,6 +385,9 @@ mod tests {
             flatpak_scope("0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-com.brave.Browser-750805322.scope"),
             Some("com.brave.Browser")
         );
-        assert_eq!(flatpak_scope("0::/user.slice/user@1000.service/app.slice/app-foot-1.scope"), None);
+        assert_eq!(
+            flatpak_scope("0::/user.slice/user@1000.service/app.slice/app-foot-1.scope"),
+            None
+        );
     }
 }
