@@ -1,4 +1,4 @@
-# Develop the panel and the dock
+# Develop Folio
 
 Work happens on the test PC inside a running Elavo session. Nothing here needs an image rebuild.
 
@@ -19,9 +19,9 @@ scripts/dev-run elavo-dock
 scripts/dev-run elavo-lens
 ```
 
-`dev-run` builds in the toolbox, stops the running copy, and starts the new build on the host session. The host image does not carry `libgtk4-layer-shell` until the image ships the shell, so the script puts the toolbox copy on `LD_LIBRARY_PATH`.
+`dev-run` builds in the toolbox, stops the running copy, and starts the new build on the host session. The host image does not carry `libgtk4-layer-shell` until the image ships Folio, so the script puts the toolbox copy on `LD_LIBRARY_PATH`.
 
-On an image that already runs the shell as user services, stop the service first so it does not hold the D-Bus name:
+On an image that already runs Folio as user services, stop the service first so it does not hold the D-Bus name:
 
 ```bash
 systemctl --user stop elavo-dock
@@ -51,7 +51,7 @@ Until the image ships Lens, point Super+Space at the dev build in `~/.config/lab
 
 ```xml
 <keybind key="W-space">
-  <action name="Execute" command="sh -c 'LD_LIBRARY_PATH=$HOME/GitHub/elavo-shell/target/devlib exec $HOME/GitHub/elavo-shell/target/debug/elavo-lens --toggle'" />
+  <action name="Execute" command="sh -c 'LD_LIBRARY_PATH=$HOME/GitHub/elavo-folio/target/devlib exec $HOME/GitHub/elavo-folio/target/debug/elavo-lens --toggle'" />
 </keybind>
 ```
 

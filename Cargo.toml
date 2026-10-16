@@ -12,7 +12,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/elavo-io/elavo-shell"
+repository = "https://github.com/elavo-io/elavo-folio"
 
 [workspace.dependencies]
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }

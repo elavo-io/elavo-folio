@@ -1,6 +1,6 @@
 # Elavo Folio
 
-Folio is the Elavo desktop shell: a top panel, a dock, and Lens, running as GTK4 clients of stock labwc. The repository and the package are `elavo-shell`. Another system can install that package without the Elavo image.
+Folio is the Elavo desktop. The top panel, the dock, and Lens are parts of Folio, and the control center will be too. Each part is its own program (`elavo-panel`, `elavo-dock`, `elavo-lens`), and they share code, a look, and one release. They run as GTK4 clients of stock labwc, so another system can install Folio without the Elavo image.
 
 ## What you see
 
@@ -10,7 +10,9 @@ Folio is the Elavo desktop shell: a top panel, a dock, and Lens, running as GTK4
 
 Another application gets a bold menu with its name: New Window when it has a desktop file, Hide, Hide Others, Show All, and Quit. Quit asks each of its windows to close, because a window does not carry a process ID. Its own menus sit in the middle when it exports them. A Window menu follows: Minimize, Zoom, Close Window, Bring All to Front, and the window list. The panel sends those window commands with `zwlr_foreign_toplevel_handle_v1`.
 
-labwc does not say where an application's menus are. The panel looks up the focused window's `app_id` on the session bus, reads that application's GTK menubar (`org.gtk.Menus`) and its `app.*` actions (`org.gtk.Actions`). `win.*` actions are used when the application has one window and exports one window object. A GTK application may still draw a menu bar inside its window as well. Qt, KDE, Electron, and XWayland applications get the panel's menus only.
+labwc does not say where an application's menus are. The panel looks up the focused window's `app_id` on the session bus, reads that application's GTK menubar (`org.gtk.Menus`) and its `app.*` actions (`org.gtk.Actions`). `win.*` actions are used when the application has one window and exports one window object. A GTK application may still draw a menu bar inside its window as well.
+
+The panel also owns `com.canonical.AppMenu.Registrar`. Qt applications that find it when they start hand their menu bar to the panel (`com.canonical.dbusmenu`) and stop drawing it in their window. The panel ties a registration to the focused window by the sender's process or Flatpak id, and finds menus already exported when it starts. A Flatpak needs `--talk-name=com.canonical.AppMenu.Registrar` to reach it. Firefox and Chromium-based browsers on Wayland, and Electron applications, get the panel's menus only.
 
 **Dock.** A shelf along the bottom. Kept applications, then running ones, then a divider, then folders and the Trash. It magnifies, shows labels, opens stacks, and reorders by drag. Open windows come from `wlr-foreign-toplevel-management`. The panel and the dock each keep their own copy of that list, in `elavo-common`, so the list does not wait on GTK.
 
@@ -69,7 +71,7 @@ The session starts `graphical-session.target` from labwc's autostart. The three 
 - Dropping an Elavo shortcut onto the dock. An `.eapp` dropped there is kept through its `launch.desktop`.
 - The calendar icon's `org.elavo.CalendarIcon.Changed` reload.
 - The control center, opened from the status icons.
-- Menus exported by Qt, KDE, Electron, and XWayland applications. Those applications get the panel's menus only.
+- Menus for Firefox and Chromium-based browsers on Wayland, and for Electron applications. They publish none the panel can read, and get the panel's menus only.
 - Minimize effects and window thumbnails labwc does not provide. A minimized window shows as its application's icon on a card.
 - An RPM. The image copies the release binaries for now.
 

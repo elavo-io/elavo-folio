@@ -1,6 +1,6 @@
 [Unit]
 Description=Elavo Lens
-Documentation=https://github.com/elavo-io/elavo-shell
+Documentation=https://github.com/elavo-io/elavo-folio
 PartOf=graphical-session.target
 After=graphical-session.target
 Requisite=graphical-session.target

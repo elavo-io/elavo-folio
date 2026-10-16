@@ -1,9 +1,9 @@
 #!/bin/sh
-# Build one shell program in the toolbox and run it on the host session.
+# Build one Folio program in the toolbox and run it on the host session.
 # Usage: scripts/dev-run elavo-panel|elavo-dock|elavo-lens [args...]
 #
-# The host image does not carry libgtk4-layer-shell until the image ships the
-# shell, so the toolbox copy is put on LD_LIBRARY_PATH. Host and toolbox are
+# The host image does not carry libgtk4-layer-shell until the image ships
+# Folio, so the toolbox copy is put on LD_LIBRARY_PATH. Host and toolbox are
 # both Fedora 44, so the GTK they link against is the same.
 set -eu
 
@@ -19,7 +19,7 @@ toolbox run -c "${toolbox_name}" sh -c "
     { cmp -s /usr/lib64/libgtk4-layer-shell.so.0 \"\$lib\" ||
       { cp -L /usr/lib64/libgtk4-layer-shell.so.0 \"\$lib.new\" && mv -f \"\$lib.new\" \"\$lib\"; }; }
 "
-# The other shell programs have that library mapped. Writing over it in place
+# The other Folio programs have that library mapped. Writing over it in place
 # crashes them; only replace it, and only when it changed.
 
 # A running instance would take the arguments as a remote command and the
