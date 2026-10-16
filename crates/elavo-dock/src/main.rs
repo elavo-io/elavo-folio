@@ -413,18 +413,11 @@ impl Dock {
     }
 
     fn about_tile(&self, settings: &Settings) -> Option<Tile> {
-        if self.about_window().is_none() {
-            return None;
-        }
+        self.about_window()?;
         Some(Tile {
             key: ABOUT_KEY.to_owned(),
             section: Section::Apps,
-            icon: Some(TileIcon::Icon(
-                gio::FileIcon::new(&gio::File::for_uri(
-                    "resource:///io/elavo/Dock/elavo-folio-panel.png",
-                ))
-                .upcast(),
-            )),
+            icon: Some(TileIcon::Icon(gio::ThemedIcon::new(PANEL_APP_ID).upcast())),
             label: "About Elavo".to_owned(),
             indicator: settings.show_indicators,
             badge: None,
@@ -995,8 +988,6 @@ fn parse_args(args: &[std::ffi::OsString]) -> Options {
 }
 
 fn main() -> glib::ExitCode {
-    gio::resources_register_include!("elavo-dock.gresource").expect("dock resources");
-
     let app = gtk::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)

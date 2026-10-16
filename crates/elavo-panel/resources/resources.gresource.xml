@@ -1,10 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
-  <!-- GtkApplication adds <base path>/icons to the icon theme, so the
-       bundled sun is found as elavo-sun-symbolic when no theme ships it. -->
   <gresource prefix="/io/elavo/Panel">
-    <file preprocess="xml-stripblanks">icons/scalable/apps/elavo-sun-symbolic.svg</file>
-    <file preprocess="xml-stripblanks">icons/scalable/actions/edit-find-symbolic.svg</file>
     <file preprocess="xml-stripblanks">about-sun.svg</file>
     <file>style.css</file>
   </gresource>

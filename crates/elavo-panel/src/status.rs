@@ -74,11 +74,10 @@ impl Status {
     }
 }
 
-/// Toggles Lens, the same action as Super+Space. The glyph is ysUI
-/// `edit-find` until an Elavo icon exists.
+/// Toggles Lens, the same action as Super+Space.
 fn search_button() -> gtk::Button {
     let icon = gtk::Image::builder()
-        .icon_name("edit-find-symbolic")
+        .icon_name("elavo-edit-find-symbolic")
         .pixel_size(16)
         .build();
     let button = gtk::Button::builder()

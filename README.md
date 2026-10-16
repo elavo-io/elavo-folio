@@ -34,7 +34,7 @@ The code in this repository is Folio's. These programs and libraries stay their 
 | async-channel | A queue for that window list. Linked. | MIT OR Apache-2.0 |
 | Nautilus | The Files window. Folio's file commands call its actions through `extensions/nautilus-folio`. | GPL-3.0-or-later |
 
-The Trash is GVfs `trash:///`. Show in Files calls `org.freedesktop.FileManager1.ShowItems`. Sleep, Restart, and Shut Down call `org.freedesktop.login1`. Badges, progress, and attention come from the `com.canonical.Unity.LauncherEntry` signal. Those are desktop interfaces. The panel's sun is Elavo's own icon, with a copy compiled in as a fallback.
+The Trash is GVfs `trash:///`. Show in Files calls `org.freedesktop.FileManager1.ShowItems`. Sleep, Restart, and Shut Down call `org.freedesktop.login1`. Badges, progress, and attention come from the `com.canonical.Unity.LauncherEntry` signal. Those are desktop interfaces. The panel's sun, its search glass, and the dock's About tile are icon names (`elavo-sun-symbolic`, `elavo-edit-find-symbolic`, `io.elavo.Panel`) from the Elavo icon theme in `elavo-visuals`. Only the larger sun in the About window is compiled in.
 
 ## What is in this repository
 

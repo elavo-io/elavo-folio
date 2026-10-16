@@ -287,8 +287,8 @@ fn find_key<'a>(object: &'a str, key: &str) -> Option<&'a str> {
     let mut rest = object;
     while let Some(at) = rest.find(&marker) {
         let after = rest[at + marker.len()..].trim_start();
-        if after.starts_with(':') {
-            return Some(after[1..].trim_start());
+        if let Some(value) = after.strip_prefix(':') {
+            return Some(value.trim_start());
         }
         rest = &rest[at + marker.len()..];
     }
