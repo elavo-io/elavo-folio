@@ -4,9 +4,11 @@
 mod about;
 mod appmenu;
 mod clock;
+mod dbusmenu;
 mod focus;
 mod folio;
 mod menu;
+mod registrar;
 mod status;
 
 use std::cell::{OnceCell, RefCell};

@@ -4,9 +4,11 @@
 //! foreign-toplevel, so every application gets them.
 //!
 //! labwc implements neither `gtk_shell1` nor `org_kde_kwin_appmenu`, so no
-//! window says where its menus are. A GtkApplication owns its ID on the
-//! session bus and exports its menubar under the object path derived from
-//! that ID, so the panel looks there for the focused window's `app_id`.
+//! window says where its menus are. Two sources are tried for the focused
+//! window's `app_id`: a dbusmenu registered with the panel's AppMenu
+//! Registrar by a matching process (Qt), then a GtkApplication that owns the
+//! ID on the session bus and exports its menubar under the object path
+//! derived from it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -18,8 +20,10 @@ use elavo_common::AppIndex;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 
+use crate::dbusmenu::DbusMenu;
 use crate::focus::Focus;
 use crate::folio;
+use crate::registrar::Registrar;
 
 const DBUS_TIMEOUT_MS: i32 = 1000;
 const MAX_TITLE_CHARS: usize = 60;
@@ -33,6 +37,11 @@ struct Menus {
     model: gio::MenuModel,
     app: gio::ActionGroup,
     win: Option<gio::ActionGroup>,
+    /// The application has its own Window menu, and the panel's items are a
+    /// section at its end.
+    merges_window: bool,
+    /// Keeps a dbusmenu source following the application's changes.
+    _dbusmenu: Option<Rc<DbusMenu>>,
 }
 
 struct Shown {
@@ -55,6 +64,7 @@ pub struct AppMenu {
     controller: RefCell<Option<Controller>>,
     index: RefCell<AppIndex>,
     misses: RefCell<HashSet<String>>,
+    registrar: RefCell<Option<Rc<Registrar>>>,
     shown: RefCell<Option<Shown>>,
     /// `elavo.*`: the panel's own items, kept apart from the application's
     /// `app.*` and `win.*`.
@@ -62,6 +72,7 @@ pub struct AppMenu {
     folio: Rc<folio::Folio>,
     /// The focused application's windows, at the end of the Window menu.
     window_list: gio::Menu,
+    window_menu: gio::Menu,
     listed: RefCell<Vec<(String, String)>>,
     generation: Cell<u64>,
     queued: Cell<bool>,
@@ -78,9 +89,11 @@ impl AppMenu {
             controller: RefCell::default(),
             index: RefCell::new(AppIndex::load()),
             misses: RefCell::default(),
+            registrar: RefCell::default(),
             shown: RefCell::default(),
             actions: gio::SimpleActionGroup::new(),
             folio,
+            window_menu: window_menu(&window_list),
             window_list,
             listed: RefCell::default(),
             generation: Cell::new(0),
@@ -95,6 +108,15 @@ impl AppMenu {
             });
         }
         menu.install_actions();
+        {
+            let weak = Rc::downgrade(&menu);
+            let registrar = Registrar::start(move || {
+                if let Some(menu) = weak.upgrade() {
+                    menu.refresh_shown(true);
+                }
+            });
+            menu.registrar.replace(Some(registrar));
+        }
         match toplevels::start() {
             Ok((controller, events)) => {
                 menu.controller.replace(Some(controller));
@@ -394,11 +416,13 @@ impl AppMenu {
     }
 
     fn update(self: &Rc<Self>) {
-        self.refresh_shown();
+        self.refresh_shown(false);
         self.sync_windows();
     }
 
-    fn refresh_shown(self: &Rc<Self>) {
+    /// `force` probes the menus again for the same application, after a
+    /// registration with the Registrar came or went.
+    fn refresh_shown(self: &Rc<Self>, force: bool) {
         let (focused, nautilus_windows) = {
             let focus = self.focus.borrow();
             let focused = focus.focused().map(str::to_owned);
@@ -433,7 +457,9 @@ impl AppMenu {
         let app_id = focused.unwrap_or_default();
         let windows = self.focus.borrow().windows_of(&app_id);
         match self.shown.borrow().as_ref() {
-            Some(shown) if !shown.folio && shown.app_id == app_id && shown.windows == windows => {
+            Some(shown)
+                if !force && !shown.folio && shown.app_id == app_id && shown.windows == windows =>
+            {
                 return;
             }
             _ => {}
@@ -445,6 +471,16 @@ impl AppMenu {
         let desktop_stem = desktop_id
             .as_deref()
             .map(|id| id.strip_suffix(".desktop").unwrap_or(id).to_owned());
+        let registered = {
+            let wm_class = desktop_id
+                .as_deref()
+                .and_then(|id| self.index.borrow().get(id).and_then(|e| e.wm_class.clone()));
+            let wanted = process_names_for(&app_id, desktop_stem.as_deref(), wm_class.as_deref());
+            self.registrar
+                .borrow()
+                .as_ref()
+                .and_then(|registrar| registrar.find(&wanted))
+        };
         // Keep the menus of the same application while the new window count
         // is probed, so a second window does not make them blink.
         let previous = self
@@ -465,7 +501,24 @@ impl AppMenu {
 
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let menus = find_menus(&app_id, desktop_stem.as_deref(), windows).await;
+            let mut menus = None;
+            if let Some((sender, path)) = registered {
+                let window_menu = weak.upgrade().map(|m| m.window_menu.clone());
+                if let Some(window_menu) = window_menu {
+                    menus = DbusMenu::load(&sender, &path, window_menu.upcast())
+                        .await
+                        .map(|source| Menus {
+                            model: source.model(),
+                            app: source.actions(),
+                            win: None,
+                            merges_window: source.has_window_menu(),
+                            _dbusmenu: Some(source),
+                        });
+                }
+            }
+            if menus.is_none() {
+                menus = find_menus(&app_id, desktop_stem.as_deref(), windows).await;
+            }
             let Some(menu) = weak.upgrade() else {
                 return;
             };
@@ -535,14 +588,6 @@ impl AppMenu {
     /// section here.
     fn model(&self, shown: &Shown) -> gio::Menu {
         let name = menu_label(&shown.name);
-        let section = |items: &[(&str, &str)]| {
-            let menu = gio::Menu::new();
-            for (label, action) in items {
-                menu.append(Some(label), Some(action));
-            }
-            menu
-        };
-
         let app = gio::Menu::new();
         if shown.desktop_id.is_some() {
             app.append_section(None, &section(&[("New Window", "elavo.new-window")]));
@@ -557,29 +602,44 @@ impl AppMenu {
         );
         app.append_section(None, &section(&[(&format!("Quit {name}"), "elavo.quit")]));
 
-        let window = gio::Menu::new();
-        window.append_section(
-            None,
-            &section(&[
-                ("Minimize", "elavo.minimize"),
-                ("Zoom", "elavo.zoom"),
-                ("Close Window", "elavo.close"),
-            ]),
-        );
-        window.append_section(
-            None,
-            &section(&[("Bring All to Front", "elavo.bring-all-to-front")]),
-        );
-        window.append_section(None, &self.window_list);
-
         let bar = gio::Menu::new();
         bar.append_submenu(Some(&name), &app);
         if let Some(menus) = &shown.menus {
             bar.append_section(None, &menus.model);
         }
-        bar.append_submenu(Some("Window"), &window);
+        // An application's own Window menu already ends with these items.
+        if !shown.menus.as_ref().is_some_and(|m| m.merges_window) {
+            bar.append_submenu(Some("Window"), &self.window_menu);
+        }
         bar
     }
+}
+
+fn section(items: &[(&str, &str)]) -> gio::Menu {
+    let menu = gio::Menu::new();
+    for (label, action) in items {
+        menu.append(Some(label), Some(action));
+    }
+    menu
+}
+
+/// The panel's Window items, acting on windows over foreign-toplevel.
+fn window_menu(window_list: &gio::Menu) -> gio::Menu {
+    let window = gio::Menu::new();
+    window.append_section(
+        None,
+        &section(&[
+            ("Minimize", "elavo.minimize"),
+            ("Zoom", "elavo.zoom"),
+            ("Close Window", "elavo.close"),
+        ]),
+    );
+    window.append_section(
+        None,
+        &section(&[("Bring All to Front", "elavo.bring-all-to-front")]),
+    );
+    window.append_section(None, window_list);
+    window
 }
 
 fn window_id(toplevel: &Toplevel) -> String {
@@ -650,7 +710,23 @@ async fn find_menus(app_id: &str, desktop_stem: Option<&str>, windows: usize) ->
         model: model.upcast(),
         app: app.upcast(),
         win,
+        merges_window: false,
+        _dbusmenu: None,
     })
+}
+
+/// Lowercase names a registered process may go by for this window: the
+/// `app_id`, its last dotted part (`com.rtsoft.patchy` runs as `patchy`),
+/// the desktop file stem, and its `StartupWMClass`.
+fn process_names_for(app_id: &str, desktop_stem: Option<&str>, wm_class: Option<&str>) -> Vec<String> {
+    let mut names: Vec<String> = [Some(app_id), app_id.rsplit('.').next(), desktop_stem, wm_class]
+        .into_iter()
+        .flatten()
+        .filter(|n| !n.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    names.dedup();
+    names
 }
 
 async fn has_owner(bus: &gio::DBusConnection, name: &str) -> bool {
