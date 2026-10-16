@@ -54,6 +54,7 @@ Each program is one Rust binary and a single-instance `GtkApplication` (`io.elav
 
 - Super+Space runs `elavo-lens --toggle`.
 - Super+1 through Super+9 run `elavo-dock --activate N`, kept applications first, then recent ones.
+- Super+Ctrl+Q locks the screen, and Super+Shift+Q asks whether to log out. The image's keybinds run the panel's `lock` and `log-out` actions, the same ones as the sun menu. The power button runs `shut-down`.
 - `elavo-dock --settings` opens Dock Settings, as the divider's menu does.
 
 The session starts `graphical-session.target` from labwc's autostart. The three programs are user services wanted by that target, so a crash restarts the panel, the dock, or Lens. `KillMode=process` keeps applications they launched alive across a restart. Lens stays resident so Super+Space does not pay for process start.
