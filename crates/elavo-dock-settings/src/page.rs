@@ -347,7 +347,11 @@ pub fn window(app: &gtk::Application) -> gtk::Window {
     let window = gtk::Window::builder()
         .application(app)
         .title("Dock Settings")
-        .titlebar(&gtk::HeaderBar::new())
+        .titlebar(
+            &gtk::HeaderBar::builder()
+                .css_classes(["elavo-title-only"])
+                .build(),
+        )
         .default_width(560)
         .resizable(true)
         .child(&scrolled)

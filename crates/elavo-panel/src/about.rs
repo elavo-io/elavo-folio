@@ -36,6 +36,7 @@ pub fn show() {
         .build();
     let header = gtk::HeaderBar::builder()
         .title_widget(&gtk::Label::new(None))
+        .css_classes(["elavo-title-only"])
         .build();
     window.set_titlebar(Some(&header));
     let plate = plate(&rows);
