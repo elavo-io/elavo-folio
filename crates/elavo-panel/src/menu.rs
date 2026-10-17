@@ -11,7 +11,6 @@ pub fn install_actions(app: &gtk::Application) {
         action.connect_activate(move |_, _| f());
         app.add_action(&action);
     };
-    add("about", crate::about::show);
     add("sleep", || login1("Suspend"));
     add("restart", || {
         confirm("Restart now?", "Restart", || login1("Reboot"));
@@ -24,14 +23,30 @@ pub fn install_actions(app: &gtk::Application) {
         confirm("Log out now?", "Log Out", || spawn(&["labwc", "--exit"]));
     });
 
-    let settings = gio::SimpleAction::new("settings", None);
-    settings.set_enabled(system_settings().is_some());
-    settings.connect_activate(|_, _| {
-        if let Some(info) = system_settings() {
-            elavo_common::launch(&info, None);
-        }
-    });
-    app.add_action(&settings);
+    let installed = system_settings().is_some();
+    for (name, pane) in [("about", "about"), ("update", "updates"), ("settings", "")] {
+        let action = gio::SimpleAction::new(name, None);
+        action.set_enabled(installed);
+        action.connect_activate(move |_, _| open_settings(pane));
+        app.add_action(&action);
+    }
+}
+
+/// Open a System Settings pane. An empty pane opens Settings where it last was.
+pub(crate) fn open_settings(pane: &str) {
+    let Some(info) = system_settings() else {
+        return;
+    };
+    let program = gtk::gio::prelude::AppInfoExt::commandline(&info)
+        .unwrap_or_else(|| std::path::PathBuf::from("elavo-system-settings"));
+    let mut argv = vec![program.into_os_string()];
+    if !pane.is_empty() {
+        argv.push(std::ffi::OsString::from(pane));
+    }
+    let refs: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsString::as_os_str).collect();
+    if let Err(err) = gio::Subprocess::newv(&refs, gio::SubprocessFlags::NONE) {
+        glib::g_warning!("elavo-panel", "settings: {err}");
+    }
 }
 
 /// System Settings, when it is installed.
@@ -44,6 +59,7 @@ fn model() -> gio::Menu {
 
     let about = gio::Menu::new();
     about.append(Some("About Elavo"), Some("app.about"));
+    about.append(Some("Software Update"), Some("app.update"));
     menu.append_section(None, &about);
 
     let settings = gio::Menu::new();

@@ -698,7 +698,7 @@ impl Folio {
 
     fn run(&self, route: Route) {
         match route {
-            Route::About => crate::about::show(),
+            Route::About => crate::menu::open_settings("about"),
             Route::Nautilus(action) => nautilus_action(action),
             Route::FileOp(method) => file_op(method),
             Route::Show(place) => {

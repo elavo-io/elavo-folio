@@ -4,7 +4,7 @@ Folio is the Elavo desktop. The top panel, the dock, and Lens are parts of Folio
 
 ## What you see
 
-**Panel.** A bar across the top of each display. The sun opens About Elavo, System Settings (disabled until Settings exists), Sleep, Restart, Shut Down, Lock Screen, and Log Out. Restart, Shut Down, and Log Out ask first. The clock is centered. Network, volume, and battery sit on the right. A control center opened from those status icons comes later.
+**Panel.** A bar across the top of each display. The sun opens About Elavo and Software Update, both in System Settings, then System Settings itself, Sleep, Restart, Shut Down, Lock Screen, and Log Out. About and Software Update are disabled until Settings is installed. Restart, Shut Down, and Log Out ask first. The clock is centered. Network, volume, and battery sit on the right. A control center opened from those status icons comes later.
 
 **Global menu.** To the right of the sun. The desktop, a Files window, and Folio's own dialogs are one application, Folio. Its menus are Folio, File, Edit, View, Go, Window, and Help. Files is Nautilus underneath. Items that act on the focused Files window, such as New Folder, Copy, as List, and Back, go through `extensions/nautilus-folio`. Nautilus loads that plugin. It owns `io.elavo.FolioFiles` on the session bus and calls Nautilus's own actions. It has to be installed into `nautilus/extensions-4`, and Files restarted, before those items do anything. Go's folders, Empty Trash, Undo, and Redo use D-Bus (`org.freedesktop.FileManager1` and `org.gnome.Nautilus.FileOperations2`).
 

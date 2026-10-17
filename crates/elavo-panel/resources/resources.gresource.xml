@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
   <gresource prefix="/io/elavo/Panel">
-    <file preprocess="xml-stripblanks">about-sun.svg</file>
     <file>style.css</file>
   </gresource>
 </gresources>

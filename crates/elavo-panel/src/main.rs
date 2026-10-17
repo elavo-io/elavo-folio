@@ -1,7 +1,6 @@
 //! The Elavo top panel. Spec: elavo-architecture-and-planning-internal,
 //! planning/desktop/top-panel.md.
 
-mod about;
 mod appmenu;
 mod clock;
 mod dbusmenu;
