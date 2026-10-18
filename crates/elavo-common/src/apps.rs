@@ -162,7 +162,9 @@ impl AppIndex {
     }
 
     /// Desktop ID for a window's `app_id`. Shown entries win over hidden ones
-    /// so `foot` groups with `foot.desktop`, not `foot-server.desktop`.
+    /// so `foot` groups with `foot.desktop`, not `foot-server.desktop`. A
+    /// hidden match names a window for the panel's menus; the dock shows only
+    /// a shown one.
     pub fn match_app_id(&self, app_id: &str) -> Option<&AppEntry> {
         let to_candidates = |shown: bool| -> Vec<Candidate> {
             self.entries

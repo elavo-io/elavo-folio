@@ -60,7 +60,9 @@ pub struct Sections<K> {
 
 /// `known` says whether a desktop ID is installed; uninstalled pins are
 /// skipped but stay in the pin file. `resolve` maps an `app_id` to a desktop
-/// ID. `recent` is most recently used first.
+/// ID, or returns `None` for a window the dock should not show, such as a
+/// service whose desktop file is `NoDisplay`. `recent` is most recently used
+/// first.
 pub fn sections<K: Clone>(
     pins: &[String],
     recent: &[String],
@@ -138,6 +140,9 @@ fn items<K: Clone>(
 
     for window in windows {
         let desktop_id = resolve(window.app_id);
+        if desktop_id.is_none() && window.app_id.is_empty() {
+            continue;
+        }
         let item = match desktop_id.as_deref() {
             Some(id) => pinned
                 .iter_mut()
@@ -257,6 +262,15 @@ mod tests {
         assert_eq!(s.apps.len(), 2);
         assert!(s.apps.iter().all(|i| i.pinned && !i.running()));
         assert!(s.recents.is_empty());
+    }
+
+    #[test]
+    fn a_window_without_an_app_id_is_not_shown() {
+        // xdg-desktop-portal-gtk opens its dialogs with an empty app id.
+        let windows = [window(1, "")];
+        let s = sections(&pins(), &[], known, &windows, |_| None, &NO_RECENTS);
+        assert_eq!(s.apps.len(), 2);
+        assert!(s.apps.iter().all(|i| i.pinned));
     }
 
     #[test]

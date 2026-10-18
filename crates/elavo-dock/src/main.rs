@@ -282,7 +282,12 @@ impl Dock {
             &self.recents.borrow(),
             |id| index.get(id).is_some(),
             &windows,
-            |app_id| index.match_app_id(app_id).map(|e| e.id.clone()),
+            |app_id| {
+                index
+                    .match_app_id(app_id)
+                    .filter(|e| e.shown)
+                    .map(|e| e.id.clone())
+            },
             &model::Options {
                 recents: settings.show_recents,
                 max_recents: pins::MAX_RECENTS,
