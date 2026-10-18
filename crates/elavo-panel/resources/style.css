@@ -6,12 +6,46 @@ window.elavo-panel {
   background: transparent;
 }
 
+/* The bar is transparent over the wallpaper. Its text and symbols are white
+   or black, whichever passes WCAG AA against the strip behind it; see
+   contrast.rs. Each carries a soft shadow in the other color. */
 .elavo-panel-bar {
   min-height: 28px;
   padding: 0 10px;
-  background-color: alpha(@theme_bg_color, 0.78);
-  color: @theme_fg_color;
+  background-color: transparent;
   font-size: 13px;
+  -gtk-icon-style: symbolic;
+  transition: color 200ms ease-out;
+}
+
+.elavo-panel-bar.on-dark {
+  color: #ffffff;
+  text-shadow: 0 1px 2px alpha(#000000, 0.35);
+  -gtk-icon-shadow: 0 1px 2px alpha(#000000, 0.35);
+}
+
+.elavo-panel-bar.on-light {
+  color: #000000;
+  text-shadow: 0 1px 2px alpha(#ffffff, 0.5);
+  -gtk-icon-shadow: 0 1px 2px alpha(#ffffff, 0.5);
+}
+
+/* The faint gradient behind the bar, on its own surface below windows. It
+   is taller than the bar and fades out over the wallpaper. The gradient for
+   each output is set from code. */
+.elavo-panel-shade {
+  background-color: transparent;
+  transition: background-image 200ms ease-out;
+}
+
+/* Menus open from the bar but are not over the wallpaper, so they keep the
+   theme's colors instead of the bar's white or black. */
+.elavo-panel-bar popover,
+.elavo-panel-bar popover contents,
+.elavo-panel-menu-popover {
+  color: @theme_fg_color;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
 }
 
 .elavo-panel-bar button {
@@ -23,6 +57,10 @@ window.elavo-panel {
   border-radius: 6px;
   background: none;
   box-shadow: none;
+  /* The theme colors buttons itself. The bar's ink and shadow win. */
+  color: inherit;
+  text-shadow: inherit;
+  -gtk-icon-shadow: inherit;
 }
 
 .elavo-panel-bar button:hover {

@@ -2,7 +2,9 @@
 //! planning/desktop/top-panel.md.
 
 mod appmenu;
+mod backdrop;
 mod clock;
+mod contrast;
 mod dbusmenu;
 mod focus;
 mod folio;
@@ -23,6 +25,8 @@ const HEIGHT: i32 = 28;
 struct Panel {
     app: gtk::Application,
     windows: RefCell<Vec<gtk::ApplicationWindow>>,
+    bars: RefCell<Vec<backdrop::Bar>>,
+    backdrop: OnceCell<Rc<backdrop::Backdrop>>,
     appmenu: Rc<appmenu::AppMenu>,
     clock: Rc<clock::Clock>,
     status: Rc<status::Status>,
@@ -44,10 +48,21 @@ impl Panel {
         let panel = Rc::new(Self {
             app: app.clone(),
             windows: RefCell::default(),
+            bars: RefCell::default(),
+            backdrop: OnceCell::new(),
             appmenu: appmenu::AppMenu::new(),
             clock: clock::Clock::new(),
             status: status::Status::new(),
         });
+
+        let weak = Rc::downgrade(&panel);
+        let _ = panel
+            .backdrop
+            .set(backdrop::Backdrop::new(&display, move || {
+                if let Some(panel) = weak.upgrade() {
+                    panel.refresh_backdrop();
+                }
+            }));
 
         let weak = Rc::downgrade(&panel);
         display.monitors().connect_items_changed(move |_, _, _, _| {
@@ -66,15 +81,67 @@ impl Panel {
         let display = gdk::Display::default().expect("no display");
         let monitors = display.monitors();
         let mut windows = Vec::new();
+        let mut bars = Vec::new();
         for i in 0..monitors.n_items() {
             if let Some(monitor) = monitors.item(i).and_downcast::<gdk::Monitor>() {
-                windows.push(self.bar(&monitor));
+                let (shade_window, shade) = self.shade(&monitor);
+                let (window, widget) = self.bar(&monitor);
+                windows.extend([shade_window, window]);
+                bars.push(backdrop::Bar {
+                    widget,
+                    shade,
+                    monitor,
+                });
             }
         }
         self.windows.replace(windows);
+        self.bars.replace(bars);
+        self.refresh_backdrop();
     }
 
-    fn bar(&self, monitor: &gdk::Monitor) -> gtk::ApplicationWindow {
+    fn refresh_backdrop(&self) {
+        if let Some(backdrop) = self.backdrop.get() {
+            backdrop.refresh(&self.bars.borrow());
+        }
+    }
+
+    /// The gradient behind a bar. It sits below windows, so it only ever
+    /// tints the wallpaper, and it takes no input.
+    fn shade(&self, monitor: &gdk::Monitor) -> (gtk::ApplicationWindow, gtk::Box) {
+        let window = gtk::ApplicationWindow::builder()
+            .application(&self.app)
+            .title("Elavo Panel Shade")
+            .decorated(false)
+            .default_height(contrast::SHADE)
+            .css_classes(["elavo-panel"])
+            .build();
+        window.init_layer_shell();
+        window.set_namespace(Some("elavo-panel-shade"));
+        window.set_layer(Layer::Bottom);
+        window.set_monitor(Some(monitor));
+        for edge in [Edge::Top, Edge::Left, Edge::Right] {
+            window.set_anchor(edge, true);
+        }
+        // Start at the screen edge, not below the bar's exclusive zone.
+        window.set_exclusive_zone(-1);
+        window.set_keyboard_mode(KeyboardMode::None);
+        window.set_can_target(false);
+        window.connect_realize(|window| {
+            if let Some(surface) = window.surface() {
+                surface.set_input_region(Some(&gtk::cairo::Region::create()));
+            }
+        });
+
+        let shade = gtk::Box::builder()
+            .css_classes(["elavo-panel-shade"])
+            .height_request(contrast::SHADE)
+            .build();
+        window.set_child(Some(&shade));
+        window.present();
+        (window, shade)
+    }
+
+    fn bar(&self, monitor: &gdk::Monitor) -> (gtk::ApplicationWindow, gtk::CenterBox) {
         let window = gtk::ApplicationWindow::builder()
             .application(&self.app)
             .title("Elavo Panel")
@@ -93,18 +160,21 @@ impl Panel {
         window.set_keyboard_mode(KeyboardMode::None);
 
         let start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        start.append(&menu::button(&window));
-        start.append(&self.appmenu.widget());
+        let sun = menu::button(&window);
+        let region = self.appmenu.widget();
+        menu::link(&sun, &region);
+        start.append(&sun);
+        start.append(&region);
 
         let bar = gtk::CenterBox::builder()
-            .css_classes(["elavo-panel-bar"])
+            .css_classes(["elavo-panel-bar", "on-dark"])
             .start_widget(&start)
             .center_widget(&self.clock.label())
             .end_widget(&self.status.widget())
             .build();
         window.set_child(Some(&bar));
         window.present();
-        window
+        (window, bar)
     }
 }
 
