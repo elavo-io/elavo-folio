@@ -39,13 +39,15 @@ window.elavo-panel {
 }
 
 /* Menus open from the bar but are not over the wallpaper, so they keep the
-   theme's colors instead of the bar's white or black. */
+   theme's colors instead of the bar's white or black. The weight stays the
+   theme's too, rather than the heavier titles on the bar. */
 .elavo-panel-bar popover,
 .elavo-panel-bar popover contents,
 .elavo-panel-menu-popover {
   color: @theme_fg_color;
   text-shadow: none;
   -gtk-icon-shadow: none;
+  font-weight: normal;
 }
 
 .elavo-panel-bar button {
@@ -84,16 +86,17 @@ menubar.elavo-panel-appmenu {
   box-shadow: none;
 }
 
-/* The application menu, named after the focused application. */
-menubar.elavo-panel-appmenu > item:first-child {
-  font-weight: 700;
-}
-
 menubar.elavo-panel-appmenu > item {
   min-height: 22px;
   padding: 0 8px;
   margin: 3px 0;
   border-radius: 6px;
+  font-weight: 500;
+}
+
+/* The application menu, named after the focused application. */
+menubar.elavo-panel-appmenu > item:first-child {
+  font-weight: 800;
 }
 
 menubar.elavo-panel-appmenu > item:hover {

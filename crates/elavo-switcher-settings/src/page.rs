@@ -219,7 +219,8 @@ impl Controls {
         self.selection_hex.set_sensitive(
             selected(&self.selection, SelectionColor::ALL) == Some(SelectionColor::Custom),
         );
-        self.sink_minimized.set_sensitive(self.show_minimized.is_active());
+        self.sink_minimized
+            .set_sensitive(self.show_minimized.is_active());
         self.recent_limit.set_sensitive(self.recent.is_active());
         let fuzzy = self.fuzzy.is_active();
         self.fuzzy_rank.set_sensitive(fuzzy);
@@ -407,7 +408,7 @@ fn applications() -> Vec<(String, String)> {
             Some((info.name().to_string(), id))
         })
         .collect();
-    apps.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    apps.sort_by_key(|a| a.0.to_lowercase());
     apps.dedup_by(|a, b| a.1 == b.1);
     apps
 }
@@ -1024,7 +1025,8 @@ fn wire(controls: &Rc<Controls>) {
             }
         });
     }
-    let scales: [(&gtk::Scale, fn(&mut Settings, i32)); 7] = [
+    type SetScale = fn(&mut Settings, i32);
+    let scales: [(&gtk::Scale, SetScale); 7] = [
         (&controls.panel_scale, |s, v| s.panel_scale = v),
         (&controls.list_width, |s, v| s.list_width = v),
         (&controls.grid_columns, |s, v| s.grid_max_columns = v),
@@ -1181,10 +1183,12 @@ mod tests {
 
     #[test]
     fn page_choices_do_not_count_as_advanced() {
-        let mut s = Settings::default();
-        s.layout = Layout::Grid;
-        s.panel_scale = 80;
-        s.show_application_names = true;
+        let mut s = Settings {
+            layout: Layout::Grid,
+            panel_scale: 80,
+            show_application_names: true,
+            ..Default::default()
+        };
         assert!(!customized(&s));
         s.fuzzy_search = true;
         assert!(customized(&s));
@@ -1192,10 +1196,12 @@ mod tests {
 
     #[test]
     fn restore_keeps_the_page_applications_and_shortcuts() {
-        let mut s = Settings::default();
-        s.layout = Layout::List;
-        s.fuzzy_search = true;
-        s.reveal_delay_ms = 200;
+        let mut s = Settings {
+            layout: Layout::List,
+            fuzzy_search: true,
+            reveal_delay_ms: 200,
+            ..Default::default()
+        };
         s.rules.push(AppRule {
             id: "foot.desktop".into(),
             pinned: true,

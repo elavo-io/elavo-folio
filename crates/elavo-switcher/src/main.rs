@@ -1229,7 +1229,11 @@ fn alt_down() -> bool {
         return false;
     };
     let held = |device: Option<gdk::Device>| {
-        device.is_some_and(|device| device.modifier_state().contains(gdk::ModifierType::ALT_MASK))
+        device.is_some_and(|device| {
+            device
+                .modifier_state()
+                .contains(gdk::ModifierType::ALT_MASK)
+        })
     };
     held(seat.keyboard()) || held(seat.pointer())
 }

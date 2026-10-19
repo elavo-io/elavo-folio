@@ -3,9 +3,9 @@
 
 use std::collections::HashSet;
 
-use elavo_switcher_settings::{Layout, Scope, Settings, SortOrder};
 #[cfg(test)]
 use elavo_switcher_settings::AppRule;
+use elavo_switcher_settings::{Layout, Scope, Settings, SortOrder};
 
 #[derive(Clone, Debug)]
 pub struct WinSnap {
