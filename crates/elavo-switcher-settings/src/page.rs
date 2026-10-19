@@ -608,11 +608,36 @@ pub fn page() -> gtk::Widget {
     page.connect_destroy(move |_| {
         if let Some(controls) = keep.take() {
             if let Some(window) = controls.advanced.take() {
-                window.destroy();
+                window.close();
             }
         }
     });
     page.upcast()
+}
+
+/// The Restore Defaults question over the Advanced window. GTK 4.22.5 destroys
+/// a window's icon buffers a second time when the window is destroyed, which
+/// crashes the process, so this window is hidden after each answer and never
+/// destroyed.
+#[allow(deprecated)]
+fn restore_question(parent: &gtk::Window) -> gtk::MessageDialog {
+    let dialog = gtk::MessageDialog::builder()
+        .text("Restore the default options?")
+        .secondary_text("Your style, size, and the other choices on the App Switcher page stay. So do the applications and shortcuts you added.")
+        .transient_for(parent)
+        .modal(true)
+        .hide_on_close(true)
+        .build();
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog.add_button("Restore", gtk::ResponseType::Accept);
+    dialog.set_default_response(gtk::ResponseType::Accept);
+    dialog.connect_response(|dialog, response| {
+        dialog.set_visible(false);
+        if response == gtk::ResponseType::Accept {
+            Settings::update(restore_advanced);
+        }
+    });
+    dialog
 }
 
 /// A page in the Advanced window: groups under headings, scrolled.
@@ -852,25 +877,8 @@ fn advanced_window(controls: &Rc<Controls>) -> gtk::Window {
             window.close();
         }
     });
-    let win = window.downgrade();
-    restore.connect_clicked(move |_| {
-        let Some(window) = win.upgrade() else {
-            return;
-        };
-        let dialog = gtk::AlertDialog::builder()
-            .message("Restore the default options?")
-            .detail("Your style, size, and the other choices on the App Switcher page stay. So do the applications and shortcuts you added.")
-            .buttons(["Cancel", "Restore"])
-            .cancel_button(0)
-            .default_button(1)
-            .modal(true)
-            .build();
-        dialog.choose(Some(&window), gio::Cancellable::NONE, |answer| {
-            if matches!(answer, Ok(1)) {
-                Settings::update(restore_advanced);
-            }
-        });
-    });
+    let question = restore_question(&window);
+    restore.connect_clicked(move |_| question.present());
 
     let c = Rc::downgrade(controls);
     add_rule.connect_clicked(move |_| {
