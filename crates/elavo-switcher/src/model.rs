@@ -228,7 +228,7 @@ pub fn entries(input: &ListInput<'_>) -> Vec<Entry> {
     if settings.fuzzy_search && !input.text.is_empty() {
         rows.retain(|row| row.rank > 0);
         if settings.fuzzy_rank_best {
-            rows.sort_by(|a, b| b.rank.cmp(&a.rank));
+            rows.sort_by_key(|row| std::cmp::Reverse(row.rank));
         }
         if settings.search_includes_launchable {
             let mut added = 0;
@@ -258,7 +258,7 @@ pub fn entries(input: &ListInput<'_>) -> Vec<Entry> {
                 }
             }
             if settings.fuzzy_rank_best {
-                rows.sort_by(|a, b| b.rank.cmp(&a.rank));
+                rows.sort_by_key(|row| std::cmp::Reverse(row.rank));
             }
         }
     }

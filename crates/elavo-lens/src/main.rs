@@ -44,12 +44,15 @@ fn load_applications() -> AppIndex {
     }
 }
 
+/// x, y, width, height, corner radius, in window coordinates.
+type BlurPart = (i32, i32, i32, i32, i32);
+
 struct Lens {
     window: gtk::ApplicationWindow,
     column: gtk::Box,
     bar: gtk::Box,
     blur: RefCell<Option<elavo_common::blur::BackgroundBlur>>,
-    blur_parts: RefCell<Vec<(i32, i32, i32, i32, i32)>>,
+    blur_parts: RefCell<Vec<BlurPart>>,
     entry: gtk::Entry,
     apps_button: gtk::ToggleButton,
     results: gtk::Box,
@@ -232,13 +235,14 @@ impl Lens {
         // Bounds are only known after layout, which runs after the calls
         // above. Runs only while mapped; unchanged parts are not resent.
         let weak = Rc::downgrade(self);
-        self.window.add_tick_callback(move |_, _| match weak.upgrade() {
-            Some(lens) => {
-                lens.sync_blur();
-                glib::ControlFlow::Continue
-            }
-            None => glib::ControlFlow::Break,
-        });
+        self.window
+            .add_tick_callback(move |_, _| match weak.upgrade() {
+                Some(lens) => {
+                    lens.sync_blur();
+                    glib::ControlFlow::Continue
+                }
+                None => glib::ControlFlow::Break,
+            });
         let weak = Rc::downgrade(self);
         self.entry.connect_changed(move |_| {
             if let Some(s) = weak.upgrade() {

@@ -174,7 +174,8 @@ fn begin(state: &mut State, qh: &QueueHandle<State>, app_id: &str, title: &str) 
 
 fn xrgb_to_rgba(src: &[u8], width: i32, height: i32) -> Vec<u8> {
     let mut out = Vec::with_capacity((width * height * 4) as usize);
-    for px in src.chunks_exact(4).take((width * height) as usize) {
+    let (pixels, _) = src.as_chunks::<4>();
+    for px in pixels.iter().take((width * height) as usize) {
         out.extend_from_slice(&[px[2], px[1], px[0], 255]);
     }
     out

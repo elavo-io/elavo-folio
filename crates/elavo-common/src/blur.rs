@@ -38,7 +38,10 @@ impl BackgroundBlur {
     pub fn for_widget(widget: &gtk::Widget) -> Option<Self> {
         let surface = widget.native()?.surface()?;
         let wayland_surface = surface.downcast::<gdk4_wayland::WaylandSurface>().ok()?;
-        let display = widget.display().downcast::<gdk4_wayland::WaylandDisplay>().ok()?;
+        let display = widget
+            .display()
+            .downcast::<gdk4_wayland::WaylandDisplay>()
+            .ok()?;
         let wl_display = display.wl_display_raw()?.as_ptr();
         let wl_surface = wayland_surface.wl_surface_raw()?.as_ptr();
         Self::attach(wl_display.cast(), wl_surface.cast())
@@ -55,7 +58,8 @@ impl BackgroundBlur {
         let (globals, queue) = registry_queue_init::<BlurState>(&conn).ok()?;
         let qh = queue.handle();
         let manager: ExtBackgroundEffectManagerV1 = globals.bind(&qh, 1..=1, ()).ok()?;
-        let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), wl_surface.cast()) }.ok()?;
+        let surface_id =
+            unsafe { ObjectId::from_ptr(WlSurface::interface(), wl_surface.cast()) }.ok()?;
         let surface = WlSurface::from_id(&conn, surface_id).ok()?;
         let effect = manager.get_background_effect(&surface, &qh, ());
         let compositor: WlCompositor = globals.bind(&qh, 1..=6, ()).ok()?;
