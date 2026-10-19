@@ -1,6 +1,6 @@
 //! The Elavo menu behind the sun: About, Settings, power, lock, and log out.
 
-use std::cell::RefCell;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -243,17 +243,63 @@ fn login1(method: &'static str) {
     });
 }
 
-fn confirm(message: &'static str, accept: &'static str, then: fn()) {
-    glib::spawn_future_local(async move {
-        let dialog = gtk::AlertDialog::builder()
-            .message(message)
-            .buttons(["Cancel", accept])
-            .cancel_button(0)
-            .default_button(1)
+/// The panel's one question window. GTK 4.22.5 destroys a toplevel's icon
+/// buffers twice when it finalizes the window, which crashes the panel, so
+/// this window is hidden after each answer and never destroyed.
+#[allow(deprecated)]
+struct Confirm {
+    dialog: gtk::MessageDialog,
+    accept: gtk::Button,
+    then: Pending,
+}
+
+/// What the accept button runs for the question being shown.
+type Pending = Rc<Cell<Option<fn()>>>;
+
+thread_local! {
+    static CONFIRM: OnceCell<Confirm> = const { OnceCell::new() };
+}
+
+impl Confirm {
+    #[allow(deprecated)]
+    fn new() -> Self {
+        let dialog = gtk::MessageDialog::builder()
             .modal(true)
+            .hide_on_close(true)
             .build();
-        if let Ok(1) = dialog.choose_future(None::<&gtk::Window>).await {
-            then();
+        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+        let accept = dialog
+            .add_button("", gtk::ResponseType::Accept)
+            .downcast::<gtk::Button>()
+            .expect("dialog buttons are buttons");
+        dialog.set_default_response(gtk::ResponseType::Accept);
+
+        let then: Pending = Rc::default();
+        let pending = Rc::clone(&then);
+        dialog.connect_response(move |dialog, response| {
+            dialog.set_visible(false);
+            if let Some(then) = pending.take() {
+                if response == gtk::ResponseType::Accept {
+                    then();
+                }
+            }
+        });
+        Self {
+            dialog,
+            accept,
+            then,
         }
+    }
+}
+
+#[allow(deprecated)]
+fn confirm(message: &'static str, accept: &'static str, then: fn()) {
+    CONFIRM.with(|cell| {
+        let confirm = cell.get_or_init(Confirm::new);
+        confirm.dialog.set_property("text", message);
+        confirm.accept.set_label(accept);
+        confirm.then.set(Some(then));
+        confirm.dialog.present();
+        confirm.accept.grab_focus();
     });
 }
