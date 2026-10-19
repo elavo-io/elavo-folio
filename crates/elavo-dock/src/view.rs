@@ -581,6 +581,7 @@ mod imp {
         pub shelf: OnceCell<gtk::Box>,
         pub radius_css: OnceCell<gtk::CssProvider>,
         pub radius_px: Cell<i32>,
+        pub blur: RefCell<Option<elavo_common::blur::BackgroundBlur>>,
         pub label: OnceCell<gtk::Label>,
         pub tick: RefCell<Option<gtk::TickCallbackId>>,
     }
@@ -1103,12 +1104,43 @@ impl DockView {
             place(label.upcast_ref(), &rect);
         }
         drop(state);
+        self.sync_blur();
         let mut child = self.first_child();
         while let Some(widget) = child {
             child = widget.next_sibling();
             if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
                 popover.present();
             }
+        }
+    }
+
+    /// Blur the shelf shape. The rest of the surface is transparent and stays sharp.
+    fn sync_blur(&self) {
+        let Some(root) = self.root() else {
+            return;
+        };
+        let Some(shelf) = self.imp().shelf.get() else {
+            return;
+        };
+        let Some(bounds) = shelf.compute_bounds(&root) else {
+            return;
+        };
+        let radius = self.imp().radius_px.get();
+        let part = (
+            bounds.x().round() as i32,
+            bounds.y().round() as i32,
+            bounds.width().round().max(0.0) as i32,
+            bounds.height().round().max(0.0) as i32,
+            radius,
+        );
+        let imp = self.imp();
+        if imp.blur.borrow().is_none() {
+            if let Some(blur) = elavo_common::blur::BackgroundBlur::for_widget(self.upcast_ref()) {
+                *imp.blur.borrow_mut() = Some(blur);
+            }
+        }
+        if let Some(blur) = imp.blur.borrow().as_ref() {
+            blur.set_rounds(&[part]);
         }
     }
 

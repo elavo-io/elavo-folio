@@ -47,6 +47,9 @@ fn load_applications() -> AppIndex {
 struct Lens {
     window: gtk::ApplicationWindow,
     column: gtk::Box,
+    bar: gtk::Box,
+    blur: RefCell<Option<elavo_common::blur::BackgroundBlur>>,
+    blur_parts: RefCell<Vec<(i32, i32, i32, i32, i32)>>,
     entry: gtk::Entry,
     apps_button: gtk::ToggleButton,
     results: gtk::Box,
@@ -159,6 +162,9 @@ impl Lens {
         let lens = Rc::new(Self {
             window,
             column,
+            bar,
+            blur: RefCell::new(None),
+            blur_parts: RefCell::default(),
             entry,
             apps_button,
             results,
@@ -170,10 +176,69 @@ impl Lens {
             actions: RefCell::default(),
         });
         lens.connect(&root);
+        lens.sync_blur();
         lens
     }
 
+    /// Blur the bar, and the results card when it is open. The fullscreen
+    /// layer around them stays clear. The panel does not use this.
+    fn sync_blur(&self) {
+        let mut parts = Vec::new();
+        if let Some(bounds) = self.bar.compute_bounds(&self.window) {
+            parts.push((
+                bounds.x().round() as i32,
+                bounds.y().round() as i32,
+                bounds.width().round().max(0.0) as i32,
+                bounds.height().round().max(0.0) as i32,
+                27,
+            ));
+        }
+        if self.results.is_visible() {
+            if let Some(bounds) = self.results.compute_bounds(&self.window) {
+                parts.push((
+                    bounds.x().round() as i32,
+                    bounds.y().round() as i32,
+                    bounds.width().round().max(0.0) as i32,
+                    bounds.height().round().max(0.0) as i32,
+                    22,
+                ));
+            }
+        }
+        if self.blur.borrow().is_none() {
+            if let Some(blur) =
+                elavo_common::blur::BackgroundBlur::for_widget(self.window.upcast_ref())
+            {
+                *self.blur.borrow_mut() = Some(blur);
+            }
+        }
+        if let Some(blur) = self.blur.borrow().as_ref() {
+            if *self.blur_parts.borrow() == parts {
+                return;
+            }
+            blur.set_rounds(&parts);
+            *self.blur_parts.borrow_mut() = parts;
+            // The region applies on the next surface commit.
+            self.window.queue_draw();
+        }
+    }
+
     fn connect(self: &Rc<Self>, root: &gtk::Box) {
+        let weak = Rc::downgrade(self);
+        self.window.connect_realize(move |_| {
+            if let Some(lens) = weak.upgrade() {
+                lens.sync_blur();
+            }
+        });
+        // Bounds are only known after layout, which runs after the calls
+        // above. Runs only while mapped; unchanged parts are not resent.
+        let weak = Rc::downgrade(self);
+        self.window.add_tick_callback(move |_, _| match weak.upgrade() {
+            Some(lens) => {
+                lens.sync_blur();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
         let weak = Rc::downgrade(self);
         self.entry.connect_changed(move |_| {
             if let Some(s) = weak.upgrade() {
@@ -386,6 +451,7 @@ impl Lens {
             self.grid.invalidate_filter();
             self.grid.unselect_all();
             self.results.set_visible(true);
+            self.sync_blur();
             return;
         }
 
@@ -397,6 +463,7 @@ impl Lens {
         let query = self.entry.text();
         if query.trim().is_empty() {
             self.results.set_visible(false);
+            self.sync_blur();
             return;
         }
 
@@ -449,6 +516,7 @@ impl Lens {
         }
         self.results.set_visible(true);
         self.move_selection(0);
+        self.sync_blur();
     }
 
     /// Select the next selectable row in `step` direction; 0 selects the first.

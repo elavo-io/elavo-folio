@@ -3,6 +3,7 @@
 //! list.
 
 pub mod apps;
+pub mod blur;
 pub mod matching;
 pub mod ranking;
 pub mod toplevels;

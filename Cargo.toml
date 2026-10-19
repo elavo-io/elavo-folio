@@ -18,10 +18,11 @@ repository = "https://github.com/elavo-io/elavo-folio"
 
 [workspace.dependencies]
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+gdk4-wayland = "0.11"
 gtk4-layer-shell = "0.8"
 gio-unix = "0.22"
 glib-build-tools = "0.22"
-wayland-client = "0.31"
+wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 async-channel = "2"
