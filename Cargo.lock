@@ -140,6 +140,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "elavo-switcher"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "elavo-common",
+ "elavo-switcher-settings",
+ "gtk4",
+ "gtk4-layer-shell",
+ "libc",
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
+name = "elavo-switcher-settings"
+version = "0.1.0"
+dependencies = [
+ "gtk4",
+ "wayland-client",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

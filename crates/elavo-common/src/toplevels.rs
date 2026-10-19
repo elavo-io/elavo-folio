@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 pub use wayland_client::backend::ObjectId;
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
-use wayland_client::protocol::{wl_registry, wl_seat};
+use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
 use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
@@ -24,6 +24,8 @@ pub struct Toplevel {
     pub minimized: bool,
     pub maximized: bool,
     pub fullscreen: bool,
+    /// Output names this window is on. Empty until the compositor says.
+    pub outputs: Vec<String>,
 }
 
 pub enum Event {
@@ -83,6 +85,10 @@ impl Controller {
 struct State {
     tx: async_channel::Sender<Event>,
     pending: HashMap<ObjectId, Toplevel>,
+    /// Output object id to its name, filled in as `wl_output.name` arrives.
+    output_names: HashMap<ObjectId, String>,
+    /// Outputs a window has entered, before or after the name is known.
+    output_ids: HashMap<ObjectId, Vec<ObjectId>>,
 }
 
 // zwlr_foreign_toplevel_handle_v1.state values.
@@ -101,11 +107,21 @@ pub fn start() -> Result<(Controller, async_channel::Receiver<Event>), String> {
     let seat: wl_seat::WlSeat = globals
         .bind(&qh, 1..=7, ())
         .map_err(|e| format!("wl_seat: {e}"))?;
+    for global in globals.contents().clone_list() {
+        if global.interface == "wl_output" {
+            let version = global.version.min(4);
+            globals
+                .registry()
+                .bind::<wl_output::WlOutput, _, _>(global.name, version, &qh, ());
+        }
+    }
 
     let (tx, rx) = async_channel::unbounded();
     let mut state = State {
         tx,
         pending: HashMap::new(),
+        output_names: HashMap::new(),
+        output_ids: HashMap::new(),
     };
     std::thread::Builder::new()
         .name("foreign-toplevel".into())
@@ -130,6 +146,21 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+    }
+}
+
+impl Dispatch<wl_output::WlOutput, ()> for State {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event {
+            state.output_names.insert(output.id(), name);
+        }
     }
 }
 
@@ -166,6 +197,7 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for State {
                     minimized: false,
                     maximized: false,
                     fullscreen: false,
+                    outputs: Vec::new(),
                 },
             );
         }
@@ -190,11 +222,34 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for State {
         match event {
             E::Closed => {
                 state.pending.remove(&id);
+                state.output_ids.remove(&id);
                 let _ = state.tx.send_blocking(Event::Closed(id));
                 handle.destroy();
             }
+            E::OutputEnter { output } => {
+                let ids = state.output_ids.entry(id).or_default();
+                let output_id = output.id();
+                if !ids.contains(&output_id) {
+                    ids.push(output_id);
+                }
+            }
+            E::OutputLeave { output } => {
+                if let Some(ids) = state.output_ids.get_mut(&id) {
+                    ids.retain(|existing| existing != &output.id());
+                }
+            }
             E::Done => {
-                if let Some(toplevel) = state.pending.get(&id) {
+                let outputs = state
+                    .output_ids
+                    .get(&id)
+                    .map(|ids| {
+                        ids.iter()
+                            .filter_map(|output| state.output_names.get(output).cloned())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(toplevel) = state.pending.get_mut(&id) {
+                    toplevel.outputs = outputs;
                     let _ = state.tx.send_blocking(Event::Changed(toplevel.clone()));
                 }
             }

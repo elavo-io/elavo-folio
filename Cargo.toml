@@ -6,6 +6,8 @@ members = [
     "crates/elavo-dock",
     "crates/elavo-dock-settings",
     "crates/elavo-lens",
+    "crates/elavo-switcher",
+    "crates/elavo-switcher-settings",
 ]
 
 [workspace.package]
@@ -20,10 +22,13 @@ gtk4-layer-shell = "0.8"
 gio-unix = "0.22"
 glib-build-tools = "0.22"
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 async-channel = "2"
+libc = "0.2"
 elavo-common = { path = "crates/elavo-common" }
 elavo-dock-settings = { path = "crates/elavo-dock-settings" }
+elavo-switcher-settings = { path = "crates/elavo-switcher-settings" }
 
 [profile.release]
 lto = "thin"

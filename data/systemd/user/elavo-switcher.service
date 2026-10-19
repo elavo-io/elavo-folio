@@ -1,0 +1,19 @@
+[Unit]
+Description=Elavo app switcher
+Documentation=https://github.com/elavo-io/elavo-folio
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+ConditionEnvironment=XDG_CURRENT_DESKTOP=elavo
+
+[Service]
+ExecStart=/usr/bin/elavo-switcher
+Restart=on-failure
+RestartSec=1
+# An application launched from the switcher runs in this unit's cgroup.
+# Restarting the switcher must not take it down.
+KillMode=process
+Slice=session.slice
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,16 @@
+[package]
+name = "elavo-switcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gtk.workspace = true
+gtk4-layer-shell.workspace = true
+elavo-common.workspace = true
+elavo-switcher-settings.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+async-channel.workspace = true
+libc.workspace = true

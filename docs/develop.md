@@ -17,6 +17,7 @@ toolbox run -c elavo-dev sudo dnf5 install -y \
 scripts/dev-run elavo-panel
 scripts/dev-run elavo-dock
 scripts/dev-run elavo-lens
+scripts/dev-run elavo-switcher
 ```
 
 `dev-run` builds in the toolbox, stops the running copy, and starts the new build on the host session. The host image does not carry `libgtk4-layer-shell` until the image ships Folio, so the script puts the toolbox copy on `LD_LIBRARY_PATH`.

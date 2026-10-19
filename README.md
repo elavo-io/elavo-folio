@@ -1,6 +1,6 @@
 # Elavo Folio
 
-Folio is the Elavo desktop. The top panel, the dock, and Lens are parts of Folio, and the control center will be too. Each part is its own program (`elavo-panel`, `elavo-dock`, `elavo-lens`), and they share code, a look, and one release. They run as GTK4 clients of stock labwc, so another system can install Folio without the Elavo image.
+Folio is the Elavo desktop. The top panel, the dock, Lens, and the app switcher are parts of Folio, and the control center will be too. Each part is its own program (`elavo-panel`, `elavo-dock`, `elavo-lens`, `elavo-switcher`), and they share code, a look, and one release. They run as GTK4 clients of stock labwc, so another system can install Folio without the Elavo image.
 
 ## What you see
 
@@ -18,6 +18,8 @@ The panel also owns `com.canonical.AppMenu.Registrar`. Qt applications that find
 
 **Lens.** Super+Space opens a search field. Typing finds applications and, for arithmetic and unit conversion, a calculator. Return on a calculator result copies the answer. A grid lists every application.
 
+**App switcher.** Alt+Tab lists running applications, one icon each, and releasing Alt switches to the highlighted one. Alt+` cycles the windows of the focused application and draws nothing.
+
 ## Projects Folio uses
 
 The code in this repository is Folio's. These programs and libraries stay their own projects, with their own licenses.
@@ -28,7 +30,7 @@ The code in this repository is Folio's. These programs and libraries stay their 
 | greetd, gtkgreet | Login. Distribution packages. Their session files move into this repository from the image. | GPL-3.0-only |
 | cage | Hosts gtkgreet. A distribution package. | MIT |
 | GTK 4 | Toolkit, linked. | LGPL-2.1-or-later |
-| gtk4-layer-shell | Surfaces for the panel, the dock, and Lens. Linked. | MIT |
+| gtk4-layer-shell | Surfaces for the panel, the dock, Lens, and the app switcher. Linked. | MIT |
 | gtk-rs (`gtk4`, `gio`) | Rust bindings. Linked. | MIT |
 | wayland-client, wayland-protocols-wlr | The window list shared by the panel and the dock. Linked. | MIT |
 | async-channel | A queue for that window list. Linked. | MIT OR Apache-2.0 |
@@ -44,20 +46,25 @@ The Trash is GVfs `trash:///`. Show in Files calls `org.freedesktop.FileManager1
 | `crates/elavo-dock` | Dock: sections, menus, stacks, drag and drop, magnification, and the window list |
 | `crates/elavo-dock-settings` | The dock's settings file and its settings page, a window for now and a page Settings will embed later |
 | `crates/elavo-lens` | Lens: application search, the calculator, and the Applications grid |
+| `crates/elavo-switcher` | App switcher: Alt+Tab between applications, Alt+` between one application's windows |
+| `crates/elavo-switcher-settings` | The switcher's settings file and the App Switcher page Settings embeds |
 | `crates/elavo-common` | Desktop-file index, `app_id` matching, search ranking, launching, and the window list |
 | `extensions/nautilus-folio` | Nautilus plugin that runs Folio's File, Edit, View, and Go actions inside Files |
 | `data/systemd/user` | User units, started by `graphical-session.target` |
 | `scripts/dev-run` | Build in the toolbox and run on the host session |
 | `scripts/install` | Install a release build (`DESTDIR`, `PREFIX`), including the Nautilus plugin |
 
-Each program is one Rust binary and a single-instance `GtkApplication` (`io.elavo.Panel`, `io.elavo.Dock`, `io.elavo.Lens`). labwc owns the keys and runs the binary with a flag. The flag reaches the running instance over D-Bus, and the new process exits.
+Each program is one Rust binary and a single-instance `GtkApplication` (`io.elavo.Panel`, `io.elavo.Dock`, `io.elavo.Lens`, `io.elavo.Switcher`). labwc owns the keys and runs the binary with a flag. The flag reaches the running instance over D-Bus, and the new process exits.
 
 - Super+Space runs `elavo-lens --toggle`.
+- Alt+Tab runs `elavo-switcher --next`, and Alt+Shift+Tab runs `--previous`. Alt+` runs `--window-next`, and Alt+Shift+` runs `--window-previous`.
 - Super+1 through Super+9 run `elavo-dock --activate N`, kept applications first, then recent ones.
 - Super+Ctrl+Q locks the screen, and Super+Shift+Q asks whether to log out. The image's keybinds run the panel's `lock` and `log-out` actions, the same ones as the sun menu. The power button runs `shut-down`.
 - `elavo-dock --settings` opens Dock Settings, as the divider's menu does.
 
-The session starts `graphical-session.target` from labwc's autostart. The three programs are user services wanted by that target, so a crash restarts the panel, the dock, or Lens. `KillMode=process` keeps applications they launched alive across a restart. Lens stays resident so Super+Space does not pay for process start.
+The session starts `graphical-session.target` from labwc's autostart. The four programs are user services wanted by that target, so a crash restarts the panel, the dock, Lens, or the app switcher. `KillMode=process` keeps applications they launched alive across a restart. Lens and the app switcher stay resident so their keys do not pay for process start.
+
+`$XDG_CONFIG_HOME/elavo/switcher.conf` is a key file, group `[Switcher]`. The App Switcher page writes it and the switcher watches it. Extra shortcuts are also keybinds in the user's labwc `rc.xml`.
 
 ## Dock files
 

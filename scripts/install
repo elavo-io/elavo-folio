@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 prefix="${PREFIX:-/usr}"
 dest="${DESTDIR:-}"
 
-for bin in elavo-panel elavo-dock elavo-lens; do
+for bin in elavo-panel elavo-dock elavo-lens elavo-switcher; do
     install -Dm755 "target/release/${bin}" "${dest}${prefix}/bin/${bin}"
     install -Dm644 "data/systemd/user/${bin}.service" \
         "${dest}${prefix}/lib/systemd/user/${bin}.service"

@@ -1,0 +1,10 @@
+[package]
+name = "elavo-switcher-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gtk.workspace = true
+wayland-client.workspace = true

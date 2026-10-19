@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build one Folio program in the toolbox and run it on the host session.
-# Usage: scripts/dev-run elavo-panel|elavo-dock|elavo-lens [args...]
+# Usage: scripts/dev-run elavo-panel|elavo-dock|elavo-lens|elavo-switcher [args...]
 #
 # The host image does not carry libgtk4-layer-shell until the image ships
 # Folio, so the toolbox copy is put on LD_LIBRARY_PATH. Host and toolbox are
@@ -8,7 +8,7 @@
 set -eu
 
 cd "$(dirname "$0")/.."
-bin="${1:?usage: scripts/dev-run elavo-panel|elavo-dock|elavo-lens [args...]}"
+bin="${1:?usage: scripts/dev-run elavo-panel|elavo-dock|elavo-lens|elavo-switcher [args...]}"
 shift
 toolbox_name="${ELAVO_TOOLBOX:-elavo-dev}"
 
