@@ -113,6 +113,7 @@ dependencies = [
  "gdk4-wayland",
  "gio-unix",
  "gtk4",
+ "wayland-backend",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
@@ -713,6 +714,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "once_cell"
+version = "1.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
 name = "pango"
 version = "0.22.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1046,6 +1053,7 @@ checksum = "d8eab23fefc9e41f8e841df4a9c707e8a8c4ed26e944ef69297184de2785e3be"
 dependencies = [
  "dlib",
  "log",
+ "once_cell",
  "pkg-config",
 ]
 
