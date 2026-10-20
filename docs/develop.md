@@ -78,11 +78,26 @@ labwc -C /tmp/greeter-labwc -s "$PWD/target/debug/elavo-greeter --lock" &
 A lock client that dies leaves that compositor locked, so stop the nested labwc by its own PID afterwards. The lock also sets `LockedHint` on your real session, because it finds the session through your user. Clear it when done:
 
 ```bash
-s=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1/user/self org.freedesktop.login1.User Display | cut -d'"' -f2)
+s=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1/user/self org.freedesktop.login1.User Display | awk '{print $3}' | tr -d '"')
 busctl call org.freedesktop.login1 "$s" org.freedesktop.login1.Session SetLockedHint b false
 ```
 
 Unlocking needs `/etc/pam.d/elavo-lock`, which the image installs.
+
+`ELAVO_GREETER_TRACE=1` prints each startup step's time on stderr, from process start to the first painted frame. A `--lock` child counts from its parent's start.
+
+To see the login screen at 4K without changing greetd, run it in a headless cage. The greeter scales the output to 175% before its window appears:
+
+```bash
+cat > /tmp/cage-greeter.sh <<'EOF'
+#!/bin/sh
+wlr-randr --output HEADLESS-1 --custom-mode 3840x2160
+"$HOME/GitHub/elavo-folio/target/debug/elavo-greeter" & g=$!
+sleep 4; grim /tmp/login-4k.png; kill $g
+EOF
+chmod +x /tmp/cage-greeter.sh
+WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 cage -- /tmp/cage-greeter.sh
+```
 
 ## Debug output
 

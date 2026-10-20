@@ -8,12 +8,10 @@
 use std::path::{Path, PathBuf};
 
 use gtk::prelude::*;
-use gtk::{gdk, gdk_pixbuf::Pixbuf, gio, glib};
+use gtk::{gdk, gio, glib};
 
 pub const PUBLISHED: &str = "/var/lib/elavo/greeter/wallpapers";
 const DEFAULT_ROOT: &str = "/usr/share/backgrounds/elavo";
-/// Wide enough to cover a 4K output without decoding a 5K original.
-const DECODE_WIDTH: i32 = 3840;
 /// WCAG AA for normal text.
 const AA: f64 = 4.5;
 
@@ -92,58 +90,35 @@ pub struct Picture {
     pub ink: Ink,
 }
 
-struct Decoded {
-    bytes: glib::Bytes,
-    width: i32,
-    height: i32,
-    stride: usize,
-    alpha: bool,
-    ink: Ink,
-}
-
 /// Decode `path` off the main thread. `aspect` is the output's width over
 /// its height, used to find the strip a 28px bar covers.
 pub async fn load(path: PathBuf, aspect: f64, bar_share: f64) -> Option<Picture> {
-    let decoded = gio::spawn_blocking(move || decode(&path, aspect, bar_share))
+    gio::spawn_blocking(move || decode(&path, aspect, bar_share))
         .await
         .ok()
-        .flatten()?;
-    let format = if decoded.alpha {
-        gdk::MemoryFormat::R8g8b8a8
-    } else {
-        gdk::MemoryFormat::R8g8b8
-    };
-    let texture = gdk::MemoryTexture::new(
-        decoded.width,
-        decoded.height,
-        format,
-        &decoded.bytes,
-        decoded.stride,
-    );
-    Some(Picture {
-        texture: texture.upcast(),
-        ink: decoded.ink,
-    })
+        .flatten()
 }
 
-fn decode(path: &Path, aspect: f64, bar_share: f64) -> Option<Decoded> {
-    let pixbuf = Pixbuf::from_file_at_scale(path, DECODE_WIDTH, -1, true)
+/// GTK's own loader decodes at full size, and the renderer scales the
+/// picture to the output. Asking gdk-pixbuf for a smaller picture is several
+/// times slower: it decodes everything and then resamples on the CPU.
+fn decode(path: &Path, aspect: f64, bar_share: f64) -> Option<Picture> {
+    let texture = gdk::Texture::from_filename(path)
         .map_err(|e| glib::g_warning!("elavo-greeter", "{}: {e}", path.display()))
         .ok()?;
-    let width = pixbuf.width();
-    let height = pixbuf.height();
-    let stride = pixbuf.rowstride() as usize;
-    let channels = pixbuf.n_channels() as usize;
-    let bytes = pixbuf.read_pixel_bytes();
-    let ink = ink_for(&bytes, width, height, stride, channels, aspect, bar_share);
-    Some(Decoded {
-        bytes,
-        width,
-        height,
+    let mut downloader = gdk::TextureDownloader::new(&texture);
+    downloader.set_format(gdk::MemoryFormat::R8g8b8);
+    let (bytes, stride) = downloader.download_bytes();
+    let ink = ink_for(
+        &bytes,
+        texture.width(),
+        texture.height(),
         stride,
-        alpha: pixbuf.has_alpha(),
-        ink,
-    })
+        3,
+        aspect,
+        bar_share,
+    );
+    Some(Picture { texture, ink })
 }
 
 fn linear(channel: f64) -> f64 {

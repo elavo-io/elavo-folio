@@ -20,7 +20,7 @@ The panel also owns `com.canonical.AppMenu.Registrar`. Qt applications that find
 
 **App switcher.** Alt+Tab lists running applications, one icon each, and releasing Alt switches to the highlighted one. Alt+` cycles the windows of the focused application and draws nothing.
 
-**Login and lock screen.** One program, `elavo-greeter`, draws both. The selected person's wallpaper fills the screen, the time sits near the top in frosted white numerals over a blurred copy of it, and a thin bar shows the Elavo sun, network, volume, and battery. Each person is a round picture and a name, with the password field under the selected one. `/etc/elavo/greeter.conf` can switch the login window to Name and Password fields instead. At login greetd runs it inside cage and it signs in through greetd's IPC. `elavo-greeter --lock` takes the screen with `ext-session-lock-v1` and checks the password with PAM service `elavo-lock`.
+**Login and lock screen.** One program, `elavo-greeter`, draws both. The selected person's wallpaper fills the screen, the time sits near the top in frosted white numerals over a blurred copy of it, and a thin bar shows the Elavo sun, network, volume, and battery. At login the sun opens Sleep, Restart, and Shut Down. Each person is a round picture and a name, with the password field under the selected one. `/etc/elavo/greeter.conf` can switch the login window to Name and Password fields instead. At login greetd runs it inside cage and it signs in through greetd's IPC. `elavo-greeter --lock` takes the screen with `ext-session-lock-v1` and checks the password with PAM service `elavo-lock`.
 
 ## Projects Folio uses
 

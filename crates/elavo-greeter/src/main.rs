@@ -15,8 +15,10 @@ mod glass;
 mod greetd;
 mod logind;
 mod pam;
+mod scale;
 mod screen;
 mod status;
+mod trace;
 mod wallpaper;
 
 use std::io::{Read, Write};
@@ -31,6 +33,68 @@ use config::Show;
 use screen::{Backend, Kind, Screen};
 
 const LOCK_APP_ID: &str = "io.elavo.Greeter.Lock";
+/// How long the first frame waits for the wallpaper. Locking must not wait
+/// on a slow disk; after this the screen locks over the plain background
+/// and the picture fades in when it arrives.
+const WALLPAPER_WAIT: std::time::Duration = std::time::Duration::from_millis(1200);
+
+fn first_monitor_aspect() -> Option<f64> {
+    let display = gdk::Display::default()?;
+    let monitor = display.monitors().item(0).and_downcast::<gdk::Monitor>()?;
+    let geometry = monitor.geometry();
+    (geometry.height() > 0).then(|| f64::from(geometry.width()) / f64::from(geometry.height()))
+}
+
+/// Set up GL while the wallpaper decodes on another thread, instead of when
+/// the first window is realized.
+fn warm_up_renderer() {
+    if let Some(display) = gdk::Display::default() {
+        if let Err(e) = display.prepare_gl() {
+            glib::g_debug!("elavo-greeter", "no GL: {e}");
+        }
+    }
+    trace::mark("GL ready");
+}
+
+fn trace_first_frame(window: &impl IsA<gtk::Widget>) {
+    window.connect_realize(|w| {
+        trace::mark("window realized");
+        if let Some(clock) = w.frame_clock() {
+            let id = Rc::new(std::cell::Cell::new(None));
+            let id2 = id.clone();
+            let handler = clock.connect_after_paint(move |clock| {
+                trace::mark("first frame painted");
+                if let Some(id) = id2.take() {
+                    clock.disconnect(id);
+                }
+            });
+            id.set(Some(handler));
+        }
+    });
+}
+
+/// Runs `f` once, when the wallpaper is ready or after `WALLPAPER_WAIT`,
+/// whichever comes first.
+fn after_wallpaper(screen: &Rc<Screen>, f: impl FnOnce() + 'static) {
+    let f = Rc::new(std::cell::RefCell::new(Some(f)));
+    let run = {
+        let f = f.clone();
+        move || {
+            if let Some(f) = f.borrow_mut().take() {
+                f();
+            }
+        }
+    };
+    let pending = f.clone();
+    let timeout = run.clone();
+    glib::timeout_add_local_once(WALLPAPER_WAIT, move || {
+        if pending.borrow().is_some() {
+            trace::mark("wallpaper wait timed out");
+        }
+        timeout();
+    });
+    screen.when_ready(run);
+}
 
 struct Args {
     lock: bool,
@@ -137,6 +201,9 @@ fn run_lock(app: &gtk::Application, backend: Backend) {
         std::process::exit(1);
     }
     let screen = Screen::new(Kind::Lock, backend, Show::List, 0);
+    trace::mark("screen built");
+    screen.preload(first_monitor_aspect());
+    warm_up_renderer();
     let instance = gtk4_session_lock::Instance::new();
 
     let app_for_windows = app.clone();
@@ -148,9 +215,12 @@ fn run_lock(app: &gtk::Application, backend: Backend) {
             .css_classes(["elavo-greeter-window"])
             .build();
         window.set_child(Some(&screen_for_windows.view(Some(monitor))));
+        trace::mark("lock window built");
+        trace_first_frame(&window);
         instance.assign_window_to_monitor(&window, monitor);
     });
     instance.connect_locked(|_| {
+        trace::mark("locked");
         notify_locked();
         glib::spawn_future_local(logind::set_locked_hint(true));
     });
@@ -172,9 +242,12 @@ fn run_lock(app: &gtk::Application, backend: Backend) {
             instance.unlock();
         }
     });
-    instance.lock();
     // The lock lives as long as the process.
-    std::mem::forget(instance);
+    after_wallpaper(&screen, move || {
+        trace::mark("requesting lock");
+        instance.lock();
+        std::mem::forget(instance);
+    });
 }
 
 fn run_window(
@@ -184,7 +257,13 @@ fn run_window(
     show: Show,
     demo_people: usize,
 ) {
+    if backend == Backend::Greetd {
+        scale::apply_defaults();
+    }
     let screen = Screen::new(kind, backend, show, demo_people);
+    trace::mark("screen built");
+    screen.preload(first_monitor_aspect());
+    warm_up_renderer();
     let display = gdk::Display::default().expect("no display");
     let monitor = display.monitors().item(0).and_downcast::<gdk::Monitor>();
     let window = gtk::ApplicationWindow::builder()
@@ -203,13 +282,24 @@ fn run_window(
     if backend != Backend::Demo {
         window.fullscreen();
     }
-    window.present();
     // The window and the screen's state stay for the life of the process.
-    std::mem::forget(window);
+    after_wallpaper(&screen, move || {
+        trace::mark("presenting window");
+        window.present();
+        std::mem::forget(window);
+    });
     std::mem::forget::<Rc<Screen>>(screen);
 }
 
 fn main() -> ExitCode {
+    trace::init();
+    trace::mark("process started");
+    // GTK's Vulkan renderer takes 0.6 to 1.4 s to set up on the first
+    // window here, and GL about 0.1 s. Both the lock and the login screen
+    // are one window that has to appear at once. Set before GTK starts.
+    if std::env::var_os("GSK_RENDERER").is_none() {
+        std::env::set_var("GSK_RENDERER", "gl");
+    }
     let args = match parse_args() {
         Ok(args) => args,
         Err(e) => {
@@ -242,6 +332,7 @@ fn main() -> ExitCode {
             return;
         }
         std::mem::forget(app.hold());
+        trace::mark("activated");
         load_style();
         let show = args.show.unwrap_or_else(config::load);
         match (args.lock, args.demo) {

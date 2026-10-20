@@ -13,7 +13,7 @@ window.elavo-greeter-window {
 /* Same ink rule as the panel: white or black from the strip under it. */
 .elavo-greeter-bar {
   min-height: 28px;
-  padding: 0 14px;
+  padding: 0 10px;
   font-size: 13px;
   font-weight: 600;
   -gtk-icon-style: symbolic;
@@ -30,6 +30,51 @@ window.elavo-greeter-window {
   color: #000000;
   text-shadow: 0 1px 2px alpha(#ffffff, 0.5);
   -gtk-icon-shadow: 0 1px 2px alpha(#ffffff, 0.5);
+}
+
+/* The sun sits where the panel's does: a flat button at login, and the
+   same mark without a button on the lock screen. */
+.elavo-greeter-bar .elavo-greeter-sun > button {
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0 8px;
+  margin: 3px 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  text-shadow: inherit;
+  -gtk-icon-shadow: inherit;
+}
+
+.elavo-greeter-bar .elavo-greeter-sun > button:hover {
+  background-color: alpha(currentColor, 0.1);
+}
+
+.elavo-greeter-bar .elavo-greeter-sun > button:checked,
+.elavo-greeter-bar .elavo-greeter-sun > button:active {
+  background-color: alpha(currentColor, 0.16);
+}
+
+.elavo-greeter-sun-mark {
+  margin: 0 8px;
+}
+
+/* The menu is not over the wallpaper, so like the panel's it keeps the
+   theme's colors and weight instead of the bar's ink. */
+.elavo-greeter-bar popover,
+.elavo-greeter-bar popover contents,
+.elavo-greeter-menu-popover {
+  color: @theme_fg_color;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+  font-weight: normal;
+}
+
+.elavo-greeter-menu-popover menu,
+.elavo-greeter-menu-popover contents {
+  min-width: 220px;
 }
 
 .elavo-greeter-date {
@@ -146,33 +191,6 @@ entry.elavo-greeter-field.shake {
   font-size: 13px;
   color: #ffffff;
   text-shadow: 0 1px 3px alpha(#000000, 0.4);
-}
-
-.elavo-greeter-power-row {
-  margin-top: 28px;
-}
-
-.elavo-greeter-power {
-  padding: 4px 6px;
-  border: none;
-  background: none;
-  box-shadow: none;
-  color: #ffffff;
-  font-size: 12px;
-  font-weight: 500;
-  text-shadow: 0 1px 3px alpha(#000000, 0.4);
-}
-
-.elavo-greeter-power-circle {
-  min-width: 40px;
-  min-height: 40px;
-  border-radius: 9999px;
-  background-color: alpha(#ffffff, 0.2);
-  border: 1px solid alpha(#ffffff, 0.22);
-}
-
-.elavo-greeter-power:hover .elavo-greeter-power-circle {
-  background-color: alpha(#ffffff, 0.3);
 }
 
 .elavo-greeter-card {

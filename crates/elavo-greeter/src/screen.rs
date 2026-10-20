@@ -68,11 +68,15 @@ pub struct Screen {
     password: gtk::Entry,
     message: gtk::Label,
     stack: gtk::Stack,
-    power_row: gtk::Box,
+    /// Sleep, Restart, and Shut Down, behind the sun at login.
+    power_actions: gio::SimpleActionGroup,
     confirm_title: gtk::Label,
     confirm_button: gtk::Button,
     pending: Cell<Option<Power>>,
     on_unlock: RefCell<Option<Box<dyn Fn()>>>,
+    /// Set once the first wallpaper has loaded or failed to.
+    wallpaper_ready: Cell<bool>,
+    on_ready: RefCell<Vec<Box<dyn FnOnce()>>>,
 }
 
 fn interface_settings() -> Option<gio::Settings> {
@@ -148,25 +152,40 @@ fn avatar(account: &Account, size: i32) -> gtk::Widget {
     frame.upcast()
 }
 
-fn power_button(icon: &str, label: &str) -> gtk::Button {
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    let circle = gtk::Box::builder()
-        .halign(gtk::Align::Center)
-        .css_classes(["elavo-greeter-power-circle"])
+/// The login screen's sun: the desktop's Elavo menu, cut down to the power
+/// section. Restart and Shut Down ask first, inside the screen.
+fn sun_menu(actions: &gio::SimpleActionGroup) -> gtk::MenuButton {
+    let power = gio::Menu::new();
+    power.append(Some("Sleep"), Some("greeter.sleep"));
+    power.append(Some("Restart…"), Some("greeter.restart"));
+    power.append(Some("Shut Down…"), Some("greeter.shut-down"));
+    let menu = gio::Menu::new();
+    menu.append_section(None, &power);
+
+    let button = gtk::MenuButton::builder()
+        .icon_name("elavo-sun-symbolic")
+        .tooltip_text("Elavo")
+        .css_classes(["flat", "elavo-greeter-sun"])
+        .menu_model(&menu)
+        .always_show_arrow(false)
+        .valign(gtk::Align::Center)
         .build();
-    circle.append(
-        &gtk::Image::builder()
-            .icon_name(icon)
-            .pixel_size(18)
-            .hexpand(true)
-            .build(),
-    );
-    column.append(&circle);
-    column.append(&gtk::Label::new(Some(label)));
-    gtk::Button::builder()
-        .child(&column)
-        .css_classes(["elavo-greeter-power"])
-        .build()
+    button.insert_action_group("greeter", Some(actions));
+    if let Some(image) = button
+        .first_child()
+        .and_then(|toggle| toggle.first_child())
+        .and_downcast::<gtk::Image>()
+    {
+        image.set_pixel_size(16);
+    }
+    if let Some(popover) = button.popover() {
+        popover.set_has_arrow(false);
+        // Open from the sun's left edge rather than centered on it, so the
+        // menu stays on screen without the compositor moving it.
+        popover.set_halign(gtk::Align::Start);
+        popover.add_css_class("elavo-greeter-menu-popover");
+    }
+    button
 }
 
 impl Screen {
@@ -280,13 +299,6 @@ impl Screen {
         stack.add_named(&accounts_page, Some("accounts"));
         stack.add_named(&confirm, Some("confirm"));
 
-        let power_row = gtk::Box::builder()
-            .spacing(36)
-            .halign(gtk::Align::Center)
-            .visible(kind == Kind::Login)
-            .css_classes(["elavo-greeter-power-row"])
-            .build();
-
         let screen = Rc::new(Self {
             kind,
             backend,
@@ -306,26 +318,28 @@ impl Screen {
             password,
             message,
             stack,
-            power_row,
+            power_actions: gio::SimpleActionGroup::new(),
             confirm_title,
             confirm_button,
             pending: Cell::new(None),
             on_unlock: RefCell::default(),
+            wallpaper_ready: Cell::new(false),
+            on_ready: RefCell::default(),
         });
 
-        for (icon, label, action) in [
-            ("weather-clear-night-symbolic", "Sleep", Power::Sleep),
-            ("system-reboot-symbolic", "Restart", Power::Restart),
-            ("system-shutdown-symbolic", "Shut Down", Power::ShutDown),
+        for (name, action) in [
+            ("sleep", Power::Sleep),
+            ("restart", Power::Restart),
+            ("shut-down", Power::ShutDown),
         ] {
-            let button = power_button(icon, label);
+            let item = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(&screen);
-            button.connect_clicked(move |_| {
+            item.connect_activate(move |_, _| {
                 if let Some(screen) = weak.upgrade() {
                     screen.ask(action);
                 }
             });
-            screen.power_row.append(&button);
+            screen.power_actions.add_action(&item);
         }
 
         let weak = Rc::downgrade(&screen);
@@ -393,6 +407,36 @@ impl Screen {
         screen
     }
 
+    /// Start loading the wallpaper before any window exists, so the first
+    /// frame can show it. `aspect` is the first output's width over height.
+    pub fn preload(self: &Rc<Self>, aspect: Option<f64>) {
+        if let Some(aspect) = aspect.filter(|a| a.is_finite() && *a > 0.0) {
+            self.aspect.set(aspect);
+        }
+        self.show_wallpaper();
+    }
+
+    /// Runs `f` once the first wallpaper is ready, or at once if it already
+    /// is. A picture that fails to load counts as ready.
+    pub fn when_ready(&self, f: impl FnOnce() + 'static) {
+        if self.wallpaper_ready.get() {
+            f();
+        } else {
+            self.on_ready.borrow_mut().push(Box::new(f));
+        }
+    }
+
+    fn mark_ready(&self) {
+        if self.wallpaper_ready.replace(true) {
+            return;
+        }
+        crate::trace::mark("wallpaper ready");
+        let waiting = std::mem::take(&mut *self.on_ready.borrow_mut());
+        for f in waiting {
+            f();
+        }
+    }
+
     /// Runs after a successful unlock.
     pub fn connect_unlock(&self, f: impl Fn() + 'static) {
         self.on_unlock.replace(Some(Box::new(f)));
@@ -447,11 +491,16 @@ impl Screen {
             .vexpand(true)
             .build();
 
-        let sun = gtk::Image::builder()
-            .icon_name("elavo-sun-symbolic")
-            .pixel_size(16)
-            .css_classes(["elavo-greeter-sun"])
-            .build();
+        let sun: gtk::Widget = if self.kind == Kind::Login && primary {
+            sun_menu(&self.power_actions).upcast()
+        } else {
+            gtk::Image::builder()
+                .icon_name("elavo-sun-symbolic")
+                .pixel_size(16)
+                .css_classes(["elavo-greeter-sun-mark"])
+                .build()
+                .upcast()
+        };
         let end = gtk::Box::builder().spacing(12).build();
         self.status.append_to(&end);
         let bar = gtk::CenterBox::builder()
@@ -477,7 +526,6 @@ impl Screen {
         column.append(&spacer);
         if primary {
             column.append(&self.stack);
-            column.append(&self.power_row);
             let focus = if self.show == Show::Name {
                 self.name.clone()
             } else {
@@ -535,30 +583,38 @@ impl Screen {
 
     fn show_wallpaper(self: &Rc<Self>) {
         let Some(path) = self.wallpaper_path() else {
+            self.mark_ready();
             return;
         };
+        if self.shown.borrow().as_ref() == Some(&path) && !self.wallpaper_ready.get() {
+            // Already loading.
+            return;
+        }
         self.shown.replace(Some(path.clone()));
-        if let Some(picture) = self.pictures.borrow().get(&path).cloned() {
+        let cached = self.pictures.borrow().get(&path).cloned();
+        if let Some(picture) = cached {
             self.apply(&picture);
+            self.mark_ready();
             return;
         }
         let weak = Rc::downgrade(self);
         let aspect = self.aspect.get();
         let share = f64::from(BAR) / 900.0;
         glib::spawn_future_local(async move {
-            let Some(picture) = wallpaper::load(path.clone(), aspect, share).await else {
-                return;
-            };
+            let picture = wallpaper::load(path.clone(), aspect, share).await;
             let Some(screen) = weak.upgrade() else {
                 return;
             };
-            screen
-                .pictures
-                .borrow_mut()
-                .insert(path.clone(), picture.clone());
-            if screen.shown.borrow().as_ref() == Some(&path) {
-                screen.apply(&picture);
+            if let Some(picture) = picture {
+                screen
+                    .pictures
+                    .borrow_mut()
+                    .insert(path.clone(), picture.clone());
+                if screen.shown.borrow().as_ref() == Some(&path) {
+                    screen.apply(&picture);
+                }
             }
+            screen.mark_ready();
         });
     }
 
@@ -662,7 +718,6 @@ impl Screen {
         self.confirm_title.set_label(title);
         self.confirm_button.set_label(button);
         self.pending.set(Some(action));
-        self.power_row.set_visible(false);
         self.stack.set_visible_child_name("confirm");
         self.confirm_button.grab_focus();
     }
@@ -670,7 +725,6 @@ impl Screen {
     fn dismiss(&self) {
         self.pending.set(None);
         self.stack.set_visible_child_name("accounts");
-        self.power_row.set_visible(self.kind == Kind::Login);
         if self.show == Show::Name && self.name.text().is_empty() {
             self.name.grab_focus();
         } else {
