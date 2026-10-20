@@ -56,6 +56,34 @@ Until the image ships Lens, point Super+Space at the dev build in `~/.config/lab
 </keybind>
 ```
 
+## Try the greeter
+
+```bash
+scripts/dev-run elavo-greeter --demo
+scripts/dev-run elavo-greeter --demo --show name
+scripts/dev-run elavo-greeter --demo --lock
+scripts/dev-run elavo-greeter --demo --demo-people 3
+```
+
+`--demo` draws the login or lock screen in an ordinary window and accepts the password `elavo`. Nothing signs in or unlocks. `--demo-people N` adds up to eight made-up people to the login list, to check the row with several accounts.
+
+Test the real lock only in a nested labwc with an empty config, so its autostart does not start a second set of session services:
+
+```bash
+mkdir -p /tmp/greeter-labwc
+printf '<?xml version="1.0"?>\n<labwc_config></labwc_config>\n' > /tmp/greeter-labwc/rc.xml
+labwc -C /tmp/greeter-labwc -s "$PWD/target/debug/elavo-greeter --lock" &
+```
+
+A lock client that dies leaves that compositor locked, so stop the nested labwc by its own PID afterwards. The lock also sets `LockedHint` on your real session, because it finds the session through your user. Clear it when done:
+
+```bash
+s=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1/user/self org.freedesktop.login1.User Display | cut -d'"' -f2)
+busctl call org.freedesktop.login1 "$s" org.freedesktop.login1.Session SetLockedHint b false
+```
+
+Unlocking needs `/etc/pam.d/elavo-lock`, which the image installs.
+
 ## Debug output
 
 ```bash

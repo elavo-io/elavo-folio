@@ -20,6 +20,8 @@ The panel also owns `com.canonical.AppMenu.Registrar`. Qt applications that find
 
 **App switcher.** Alt+Tab lists running applications, one icon each, and releasing Alt switches to the highlighted one. Alt+` cycles the windows of the focused application and draws nothing.
 
+**Login and lock screen.** One program, `elavo-greeter`, draws both. The selected person's wallpaper fills the screen, the time sits near the top in frosted white numerals over a blurred copy of it, and a thin bar shows the Elavo sun, network, volume, and battery. Each person is a round picture and a name, with the password field under the selected one. `/etc/elavo/greeter.conf` can switch the login window to Name and Password fields instead. At login greetd runs it inside cage and it signs in through greetd's IPC. `elavo-greeter --lock` takes the screen with `ext-session-lock-v1` and checks the password with PAM service `elavo-lock`.
+
 ## Projects Folio uses
 
 The code in this repository is Folio's. These programs and libraries stay their own projects, with their own licenses.
@@ -27,10 +29,12 @@ The code in this repository is Folio's. These programs and libraries stay their 
 | Project | How Folio uses it | License |
 | --- | --- | --- |
 | labwc | Compositor. A distribution package. Folio ships configuration for it. | GPL-2.0-only |
-| greetd, gtkgreet | Login. Distribution packages. Their session files move into this repository from the image. | GPL-3.0-only |
-| cage | Hosts gtkgreet. A distribution package. | MIT |
+| greetd | Login. A distribution package. `elavo-greeter` speaks its IPC. | GPL-3.0-only |
+| cage | Hosts `elavo-greeter` at login. A distribution package. | MIT |
+| Linux-PAM | The lock screen's password check. Opened at run time. | BSD-3-Clause OR GPL-2.0-or-later |
 | GTK 4 | Toolkit, linked. | LGPL-2.1-or-later |
-| gtk4-layer-shell | Surfaces for the panel, the dock, Lens, and the app switcher. Linked. | MIT |
+| gtk4-layer-shell | Surfaces for the panel, the dock, Lens, and the app switcher, and the lock screen's session lock (`gtk4-session-lock`). Linked. | MIT |
+| serde_json | greetd's IPC messages. Linked. | MIT OR Apache-2.0 |
 | gtk-rs (`gtk4`, `gio`) | Rust bindings. Linked. | MIT |
 | wayland-client, wayland-protocols-wlr | The window list shared by the panel and the dock. Linked. | MIT |
 | async-channel | A queue for that window list. Linked. | MIT OR Apache-2.0 |
@@ -49,8 +53,10 @@ The Trash is GVfs `trash:///`. Show in Files calls `org.freedesktop.FileManager1
 | `crates/elavo-switcher` | App switcher: Alt+Tab between applications, Alt+` between one application's windows |
 | `crates/elavo-switcher-settings` | The switcher's settings file and the App Switcher page Settings embeds |
 | `crates/elavo-common` | Desktop-file index, `app_id` matching, search ranking, launching, and the window list |
+| `crates/elavo-greeter` | Login and lock screen, and `elavo-greeter-publish`, which copies a session's wallpaper for the login screen |
 | `extensions/nautilus-folio` | Nautilus plugin that runs Folio's File, Edit, View, and Go actions inside Files |
 | `data/systemd/user` | User units, started by `graphical-session.target` |
+| `data/pam`, `data/polkit`, `data/tmpfiles` | The lock screen's PAM service, the publish helper's polkit action, and the greeter's state directory |
 | `scripts/dev-run` | Build in the toolbox and run on the host session |
 | `scripts/install` | Install a release build (`DESTDIR`, `PREFIX`), including the Nautilus plugin |
 

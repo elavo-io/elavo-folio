@@ -1,0 +1,210 @@
+/* The greeter draws everything over the wallpaper, so it does not take the
+   theme's window colors. Loaded at application priority. */
+
+window.elavo-greeter-window {
+  background-color: #000000;
+  color: #ffffff;
+}
+
+.elavo-greeter {
+  font-family: "Inter", sans-serif;
+}
+
+/* Same ink rule as the panel: white or black from the strip under it. */
+.elavo-greeter-bar {
+  min-height: 28px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  -gtk-icon-style: symbolic;
+  transition: color 200ms ease-out;
+}
+
+.elavo-greeter-bar.on-dark {
+  color: #ffffff;
+  text-shadow: 0 1px 2px alpha(#000000, 0.35);
+  -gtk-icon-shadow: 0 1px 2px alpha(#000000, 0.35);
+}
+
+.elavo-greeter-bar.on-light {
+  color: #000000;
+  text-shadow: 0 1px 2px alpha(#ffffff, 0.5);
+  -gtk-icon-shadow: 0 1px 2px alpha(#ffffff, 0.5);
+}
+
+.elavo-greeter-date {
+  margin-top: 40px;
+  font-size: 24px;
+  font-weight: 600;
+  color: #ffffff;
+  text-shadow: 0 1px 3px alpha(#000000, 0.3);
+}
+
+/* The glass is drawn in glass.rs; this sets the numerals' size. */
+.elavo-greeter-clock {
+  font-family: "Inter Display", "Inter", sans-serif;
+  font-size: 128px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+  letter-spacing: -2px;
+  margin-top: -8px;
+}
+
+.elavo-greeter-avatar {
+  border-radius: 9999px;
+  background-color: alpha(#ffffff, 0.22);
+  box-shadow: 0 4px 16px alpha(#000000, 0.25);
+}
+
+.elavo-greeter-initial {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.elavo-greeter-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: #ffffff;
+  text-shadow: 0 1px 3px alpha(#000000, 0.35);
+}
+
+.elavo-greeter-name-other {
+  font-size: 13px;
+  font-weight: 500;
+  color: alpha(#ffffff, 0.9);
+  text-shadow: 0 1px 3px alpha(#000000, 0.35);
+}
+
+.elavo-greeter-person {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 14px;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  opacity: 0.85;
+}
+
+.elavo-greeter-person:hover {
+  background-color: alpha(#ffffff, 0.12);
+  opacity: 1;
+}
+
+/* Frosted pill fields. */
+entry.elavo-greeter-field {
+  min-height: 34px;
+  padding: 0 6px 0 14px;
+  border: 1px solid alpha(#ffffff, 0.28);
+  border-radius: 9999px;
+  background-color: alpha(#ffffff, 0.2);
+  box-shadow: 0 2px 10px alpha(#000000, 0.12);
+  color: #ffffff;
+  caret-color: #ffffff;
+  font-size: 14px;
+  outline: none;
+}
+
+entry.elavo-greeter-field:focus-within {
+  background-color: alpha(#ffffff, 0.26);
+  border-color: alpha(#ffffff, 0.45);
+}
+
+entry.elavo-greeter-field text placeholder {
+  color: alpha(#ffffff, 0.7);
+}
+
+entry.elavo-greeter-field image {
+  color: #ffffff;
+  -gtk-icon-style: symbolic;
+}
+
+entry.elavo-greeter-field image:disabled {
+  opacity: 0.4;
+}
+
+entry.elavo-greeter-field:disabled {
+  opacity: 0.6;
+}
+
+@keyframes elavo-greeter-shake {
+  0% { margin-left: 0; margin-right: 0; }
+  15% { margin-left: 22px; margin-right: 0; }
+  30% { margin-left: 0; margin-right: 22px; }
+  45% { margin-left: 16px; margin-right: 0; }
+  60% { margin-left: 0; margin-right: 16px; }
+  75% { margin-left: 8px; margin-right: 0; }
+  90% { margin-left: 0; margin-right: 8px; }
+  100% { margin-left: 0; margin-right: 0; }
+}
+
+entry.elavo-greeter-field.shake {
+  animation: elavo-greeter-shake 420ms ease-out;
+}
+
+.elavo-greeter-message,
+.elavo-greeter-fingerprint {
+  font-size: 13px;
+  color: #ffffff;
+  text-shadow: 0 1px 3px alpha(#000000, 0.4);
+}
+
+.elavo-greeter-power-row {
+  margin-top: 28px;
+}
+
+.elavo-greeter-power {
+  padding: 4px 6px;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+  text-shadow: 0 1px 3px alpha(#000000, 0.4);
+}
+
+.elavo-greeter-power-circle {
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 9999px;
+  background-color: alpha(#ffffff, 0.2);
+  border: 1px solid alpha(#ffffff, 0.22);
+}
+
+.elavo-greeter-power:hover .elavo-greeter-power-circle {
+  background-color: alpha(#ffffff, 0.3);
+}
+
+.elavo-greeter-card {
+  padding: 20px 24px;
+  border-radius: 22px;
+  border: 1px solid alpha(#ffffff, 0.25);
+  background-color: alpha(#ffffff, 0.2);
+  box-shadow: 0 8px 30px alpha(#000000, 0.2);
+}
+
+.elavo-greeter-confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.elavo-greeter-pill {
+  min-height: 30px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 9999px;
+  background-color: alpha(#ffffff, 0.22);
+  box-shadow: none;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.elavo-greeter-pill:hover {
+  background-color: alpha(#ffffff, 0.32);
+}
+
+.elavo-greeter-pill.suggested {
+  background-color: #ffffff;
+  color: #1c1c1e;
+}

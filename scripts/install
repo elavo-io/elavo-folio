@@ -5,6 +5,7 @@ set -eu
 
 cd "$(dirname "$0")/.."
 prefix="${PREFIX:-/usr}"
+sysconfdir="${SYSCONFDIR:-/etc}"
 dest="${DESTDIR:-}"
 
 for bin in elavo-panel elavo-dock elavo-lens elavo-switcher; do
@@ -12,6 +13,16 @@ for bin in elavo-panel elavo-dock elavo-lens elavo-switcher; do
     install -Dm644 "data/systemd/user/${bin}.service" \
         "${dest}${prefix}/lib/systemd/user/${bin}.service"
 done
+
+# The login and lock screen. The policy names the publish helper's path.
+install -Dm755 target/release/elavo-greeter "${dest}${prefix}/bin/elavo-greeter"
+install -Dm755 target/release/elavo-greeter-publish \
+    "${dest}${prefix}/libexec/elavo-greeter-publish"
+install -Dm644 data/polkit/io.elavo.greeter.policy \
+    "${dest}${prefix}/share/polkit-1/actions/io.elavo.greeter.policy"
+install -Dm644 data/tmpfiles/elavo-greeter.conf \
+    "${dest}${prefix}/lib/tmpfiles.d/elavo-greeter.conf"
+install -Dm644 data/pam/elavo-lock "${dest}${sysconfdir}/pam.d/elavo-lock"
 
 # Nautilus 50 loads extensions only from <libdir>/nautilus/extensions-4.
 make -C extensions/nautilus-folio
