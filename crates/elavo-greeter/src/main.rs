@@ -10,6 +10,7 @@
 //! ```
 
 mod accounts;
+mod avatar;
 mod config;
 mod glass;
 mod greetd;

@@ -23,8 +23,8 @@ use crate::status::Status;
 use crate::wallpaper::{self, Picture};
 
 const BAR: i32 = 28;
-const AVATAR: i32 = 96;
-const AVATAR_OTHER: i32 = 64;
+const AVATAR: i32 = 64;
+const AVATAR_OTHER: i32 = 42;
 const INTERFACE: &str = "org.gnome.desktop.interface";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +119,12 @@ fn password_entry() -> gtk::Entry {
 }
 
 fn avatar(account: &Account, size: i32) -> gtk::Widget {
+    if let Some(icon) = account.icon.as_ref() {
+        if let Some(image) = crate::avatar::image(icon, size) {
+            image.add_css_class("elavo-greeter-avatar");
+            return image;
+        }
+    }
     let frame = gtk::Box::builder()
         .width_request(size)
         .height_request(size)
@@ -127,28 +133,17 @@ fn avatar(account: &Account, size: i32) -> gtk::Widget {
         .overflow(gtk::Overflow::Hidden)
         .css_classes(["elavo-greeter-avatar"])
         .build();
-    match account.icon.as_ref() {
-        Some(icon) => {
-            let picture = gtk::Picture::for_filename(icon);
-            picture.set_content_fit(gtk::ContentFit::Cover);
-            picture.set_size_request(size, size);
-            picture.set_hexpand(true);
-            frame.append(&picture);
-        }
-        None => {
-            let label = gtk::Label::builder()
-                .label(account.initial())
-                .hexpand(true)
-                .css_classes(["elavo-greeter-initial"])
-                .build();
-            let attrs = pango::AttrList::new();
-            attrs.insert(pango::AttrSize::new_size_absolute(
-                (f64::from(size) * 0.42 * f64::from(pango::SCALE)) as i32,
-            ));
-            label.set_attributes(Some(&attrs));
-            frame.append(&label);
-        }
-    }
+    let label = gtk::Label::builder()
+        .label(account.initial())
+        .hexpand(true)
+        .css_classes(["elavo-greeter-initial"])
+        .build();
+    let attrs = pango::AttrList::new();
+    attrs.insert(pango::AttrSize::new_size_absolute(
+        (f64::from(size) * 0.42 * f64::from(pango::SCALE)) as i32,
+    ));
+    label.set_attributes(Some(&attrs));
+    frame.append(&label);
     frame.upcast()
 }
 
