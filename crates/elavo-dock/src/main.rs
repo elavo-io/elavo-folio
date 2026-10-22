@@ -110,6 +110,7 @@ impl Dock {
             dragging: RefCell::default(),
             settings_window: glib::WeakRef::new(),
         });
+        dock.drop_background_recents();
 
         if let Some(events) = events {
             let weak = Rc::downgrade(&dock);
@@ -203,7 +204,9 @@ impl Dock {
                                 self.index.replace(AppIndex::load());
                             }
                             list.push(toplevel.clone());
-                            if toplevel.app_id != PANEL_APP_ID {
+                            if toplevel.app_id != PANEL_APP_ID
+                                && !model::background_service(&toplevel.app_id)
+                            {
                                 self.touch_recent(&toplevel.app_id);
                             }
                             (false, false)
@@ -234,11 +237,25 @@ impl Dock {
         self.refresh();
     }
 
+    /// Drop a blacklisted service left in the recents file by an older dock.
+    fn drop_background_recents(&self) {
+        let mut recents = self.recents.borrow_mut();
+        let before = recents.len();
+        recents.retain(|id| !model::background_service(id));
+        if recents.len() != before {
+            pins::save_recents(&recents);
+        }
+    }
+
     fn touch_recent(&self, app_id: &str) {
+        if model::background_service(app_id) {
+            return;
+        }
         let Some(id) = self
             .index
             .borrow()
             .match_app_id(app_id)
+            .filter(|entry| !model::background_service(&entry.id))
             .map(|e| e.id.clone())
         else {
             return;

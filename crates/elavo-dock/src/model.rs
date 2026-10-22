@@ -60,9 +60,12 @@ pub struct Sections<K> {
 
 /// `known` says whether a desktop ID is installed; uninstalled pins are
 /// skipped but stay in the pin file. `resolve` maps an `app_id` to a desktop
-/// ID, or returns `None` for a window the dock should not show, such as a
-/// service whose desktop file is `NoDisplay`. `recent` is most recently used
-/// first.
+/// ID, or returns `None` when the window has no shown desktop file. `recent`
+/// is most recently used first.
+///
+/// [`background_service`] is omitted everywhere: no pin, no running icon, no
+/// recent, no minimized tile. `xdg-desktop-portal-gtk` is that list. Its
+/// dialogs belong to whatever application asked for them.
 pub fn sections<K: Clone>(
     pins: &[String],
     recent: &[String],
@@ -85,7 +88,7 @@ pub fn sections<K: Clone>(
         };
         let quit: Vec<Item<K>> = recent
             .iter()
-            .filter(|id| known(id) && !shown(id))
+            .filter(|id| known(id) && !shown(id) && !background_service(id))
             .take(extra)
             .map(|id| Item {
                 desktop_id: Some(id.clone()),
@@ -104,7 +107,7 @@ pub fn sections<K: Clone>(
     let minimized = if options.minimized_tiles {
         windows
             .iter()
-            .filter(|w| w.minimized)
+            .filter(|w| w.minimized && !background_service(w.app_id))
             .map(|w| w.key.clone())
             .collect()
     } else {
@@ -126,7 +129,7 @@ fn items<K: Clone>(
 ) -> (Vec<Item<K>>, Vec<Item<K>>) {
     let mut pinned: Vec<Item<K>> = pins
         .iter()
-        .filter(|id| known(id))
+        .filter(|id| known(id) && !background_service(id))
         .map(|id| Item {
             desktop_id: Some(id.clone()),
             app_id: None,
@@ -139,8 +142,13 @@ fn items<K: Clone>(
     let mut running: Vec<Item<K>> = Vec::new();
 
     for window in windows {
+        if background_service(window.app_id) {
+            continue;
+        }
         let desktop_id = resolve(window.app_id);
-        if desktop_id.is_none() && window.app_id.is_empty() {
+        if desktop_id.as_deref().is_some_and(background_service)
+            || (desktop_id.is_none() && window.app_id.is_empty())
+        {
             continue;
         }
         let item = match desktop_id.as_deref() {
@@ -208,6 +216,14 @@ pub fn place_pin(pins: &mut Vec<String>, id: &str, to: usize) {
     pins.insert(to.min(pins.len()), id.to_owned());
 }
 
+/// `xdg-desktop-portal-gtk` opens file choosers and other dialogs for
+/// whichever application asked. Those windows are not a dock application,
+/// whether the app id is empty or the desktop file's name.
+pub fn background_service(id: &str) -> bool {
+    let id = id.strip_suffix(".desktop").unwrap_or(id);
+    id == "xdg-desktop-portal-gtk"
+}
+
 /// Most recently used first, without duplicates, at most `max` long.
 pub fn touch_recent(recent: &mut Vec<String>, id: &str, max: usize) {
     recent.retain(|r| r != id);
@@ -266,11 +282,36 @@ mod tests {
 
     #[test]
     fn a_window_without_an_app_id_is_not_shown() {
-        // xdg-desktop-portal-gtk opens its dialogs with an empty app id.
         let windows = [window(1, "")];
         let s = sections(&pins(), &[], known, &windows, |_| None, &NO_RECENTS);
         assert_eq!(s.apps.len(), 2);
         assert!(s.apps.iter().all(|i| i.pinned));
+    }
+
+    #[test]
+    fn portal_dialogs_are_not_a_dock_item() {
+        let windows = [
+            window(1, "xdg-desktop-portal-gtk"),
+            Window {
+                minimized: true,
+                ..window(2, "xdg-desktop-portal-gtk.desktop")
+            },
+            window(3, "portal-dialog"),
+        ];
+        let pins = vec!["xdg-desktop-portal-gtk.desktop".to_owned()];
+        let recent = vec!["xdg-desktop-portal-gtk.desktop".to_owned()];
+        let options = Options {
+            recents: true,
+            minimized_tiles: true,
+            ..NO_RECENTS
+        };
+        let resolve = |app_id: &str| {
+            (app_id == "portal-dialog").then(|| "xdg-desktop-portal-gtk.desktop".to_owned())
+        };
+        let s = sections(&pins, &recent, known, &windows, resolve, &options);
+        assert!(s.apps.is_empty());
+        assert!(s.recents.is_empty());
+        assert!(s.minimized.is_empty());
     }
 
     #[test]
