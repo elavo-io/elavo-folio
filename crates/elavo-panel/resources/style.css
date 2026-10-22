@@ -50,14 +50,20 @@ window.elavo-panel {
   font-weight: normal;
 }
 
+/* Bar items fill the bar's full height, so a click above or below the pill
+   still lands. The transparent top and bottom borders are that extra reach;
+   the background stops inside them, so the pill stays 22px tall. */
 .elavo-panel-bar button {
   min-height: 22px;
   min-width: 22px;
   padding: 0 8px;
-  margin: 3px 0;
-  border: none;
-  border-radius: 6px;
+  margin: 0;
+  border-style: solid;
+  border-color: transparent;
+  border-width: 3px 0;
+  border-radius: 9999px;
   background: none;
+  background-clip: padding-box;
   box-shadow: none;
   /* The theme colors buttons itself. The bar's ink and shadow win. */
   color: inherit;
@@ -89,8 +95,13 @@ menubar.elavo-panel-appmenu {
 menubar.elavo-panel-appmenu > item {
   min-height: 22px;
   padding: 0 8px;
-  margin: 3px 0;
-  border-radius: 6px;
+  margin: 0;
+  border-style: solid;
+  border-color: transparent;
+  border-width: 3px 0;
+  border-radius: 9999px;
+  background-clip: padding-box;
+  box-shadow: none;
   font-weight: 500;
 }
 
@@ -105,6 +116,7 @@ menubar.elavo-panel-appmenu > item:hover {
 
 menubar.elavo-panel-appmenu > item:selected {
   background-color: alpha(currentColor, 0.16);
+  box-shadow: none;
   color: inherit;
 }
 
