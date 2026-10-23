@@ -34,9 +34,9 @@ use config::Show;
 use screen::{Backend, Kind, Screen};
 
 const LOCK_APP_ID: &str = "io.elavo.Greeter.Lock";
-/// How long the first frame waits for the wallpaper. Locking must not wait
-/// on a slow disk; after this the screen locks over the plain background
-/// and the picture fades in when it arrives.
+/// How long the login window waits for the wallpaper before it appears.
+/// The lock does not wait: it covers the session first, and the picture
+/// arrives on the window that is already up.
 const WALLPAPER_WAIT: std::time::Duration = std::time::Duration::from_millis(1200);
 
 fn first_monitor_aspect() -> Option<f64> {
@@ -143,6 +143,11 @@ fn parse_args() -> Result<Args, String> {
 
 fn load_style() {
     let display = gdk::Display::default().expect("no display");
+    // The password field's caret blinks only when this is on. A session or
+    // the greetd user can have it off; the greeter wants it either way.
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_cursor_blink(true);
+    }
     let css = gtk::CssProvider::new();
     css.load_from_resource("/io/elavo/Greeter/style.css");
     gtk::style_context_add_provider_for_display(
@@ -243,12 +248,12 @@ fn run_lock(app: &gtk::Application, backend: Backend) {
             instance.unlock();
         }
     });
-    // The lock lives as long as the process.
-    after_wallpaper(&screen, move || {
-        trace::mark("requesting lock");
-        instance.lock();
-        std::mem::forget(instance);
-    });
+    // Lock before the wallpaper finishes. before-sleep waits on this, and a
+    // wait here lets the machine suspend with the session still showing.
+    // The picture is already decoding and is applied when it arrives.
+    trace::mark("requesting lock");
+    instance.lock();
+    std::mem::forget(instance);
 }
 
 fn run_window(

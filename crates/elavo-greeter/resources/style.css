@@ -113,26 +113,21 @@ window.elavo-greeter-window {
   text-shadow: 0 1px 3px alpha(#000000, 0.35);
 }
 
-.elavo-greeter-name-other {
-  font-size: 13px;
-  font-weight: 500;
-  color: alpha(#ffffff, 0.9);
-  text-shadow: 0 1px 3px alpha(#000000, 0.35);
-}
-
 .elavo-greeter-person {
-  padding: 6px 10px;
+  padding: 4px 16px 4px 4px;
   border: none;
-  border-radius: 14px;
+  border-radius: 9999px;
   background: none;
   box-shadow: none;
   color: inherit;
-  opacity: 0.85;
+}
+
+.elavo-greeter-chosen {
+  padding: 6px 12px;
 }
 
 .elavo-greeter-person:hover {
-  background-color: alpha(#ffffff, 0.12);
-  opacity: 1;
+  background-color: alpha(#ffffff, 0.16);
 }
 
 /* Frosted pill fields. */

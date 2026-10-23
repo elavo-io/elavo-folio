@@ -24,7 +24,10 @@ use crate::wallpaper::{self, Picture};
 
 const BAR: i32 = 28;
 const AVATAR: i32 = 64;
-const AVATAR_OTHER: i32 = 42;
+/// How tall the user list may grow before it scrolls.
+const LIST_HEIGHT: i32 = 320;
+/// Every list row is this wide, so the photos share one left edge.
+const LIST_WIDTH: i32 = 300;
 const INTERFACE: &str = "org.gnome.desktop.interface";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +57,11 @@ pub struct Screen {
     backend: Backend,
     show: Show,
     accounts: Vec<Account>,
+    /// Whose wallpaper and, once chosen, whose password is on screen.
     selected: Cell<usize>,
+    /// List mode shows the password only after a person is chosen. Login
+    /// starts with nobody chosen. The lock opens already chosen.
+    chosen: Cell<bool>,
     status: Rc<Status>,
     views: RefCell<Vec<View>>,
     pictures: RefCell<HashMap<PathBuf, Picture>>,
@@ -185,13 +192,13 @@ fn sun_menu(actions: &gio::SimpleActionGroup) -> gtk::MenuButton {
 
 impl Screen {
     pub fn new(kind: Kind, backend: Backend, show: Show, demo_people: usize) -> Rc<Self> {
-        let (accounts, selected) = match kind {
-            Kind::Lock => (vec![accounts::current()], 0),
+        let (accounts, selected, chosen) = match kind {
+            Kind::Lock => (vec![accounts::current()], 0, true),
             Kind::Login => {
                 let mut list = accounts::list();
                 list.extend(accounts::demo_people(demo_people));
                 let selected = accounts::last_user(&list).unwrap_or(0);
-                (list, selected)
+                (list, selected, false)
             }
         };
         let show = if kind == Kind::Lock { Show::List } else { show };
@@ -235,19 +242,21 @@ impl Screen {
         password_block.append(&message);
 
         let people = gtk::Box::builder()
-            .spacing(if accounts.len() > 5 { 28 } else { 40 })
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .width_request(LIST_WIDTH)
             .halign(gtk::Align::Center)
             .margin_start(24)
             .margin_end(24)
             .build();
-        // A row wider than the screen scrolls sideways instead of growing
-        // the window. Focus follows the password field, so the selected
-        // person stays in view.
+        // A long list scrolls instead of growing the window. The password
+        // stays out of the list until someone is chosen.
         let people_scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::External)
-            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::External)
             .propagate_natural_width(true)
             .propagate_natural_height(true)
+            .max_content_height(LIST_HEIGHT)
             .halign(gtk::Align::Center)
             .child(&people)
             .build();
@@ -300,6 +309,7 @@ impl Screen {
             show,
             accounts,
             selected: Cell::new(selected),
+            chosen: Cell::new(chosen),
             status: Status::new(kind == Kind::Lock),
             views: RefCell::default(),
             pictures: RefCell::default(),
@@ -521,13 +531,16 @@ impl Screen {
         column.append(&spacer);
         if primary {
             column.append(&self.stack);
-            let focus = if self.show == Show::Name {
-                self.name.clone()
-            } else {
-                self.password.clone()
-            };
+            let weak = Rc::downgrade(self);
             column.connect_map(move |_| {
-                focus.grab_focus();
+                let Some(screen) = weak.upgrade() else {
+                    return;
+                };
+                if screen.show == Show::Name {
+                    screen.name.grab_focus();
+                } else if screen.chosen.get() {
+                    screen.password.grab_focus();
+                }
             });
         }
         let bottom = gtk::Box::builder()
@@ -592,6 +605,10 @@ impl Screen {
             self.mark_ready();
             return;
         }
+        // Leave the picture that is already on screen. The new one replaces
+        // it when the decode finishes, so choosing another person is not a
+        // black frame, and a picture decoded before the first present is
+        // what that present shows.
         let weak = Rc::downgrade(self);
         let aspect = self.aspect.get();
         let share = f64::from(BAR) / 900.0;
@@ -624,81 +641,117 @@ impl Screen {
         }
     }
 
-    /// The row of people: the selected one large, with the password field
-    /// under the name, the others smaller beside it.
+    /// List mode has two states. With nobody chosen, every account is a row.
+    /// Once someone is chosen, that person and the password replace the list.
     fn rebuild_people(self: &Rc<Self>) {
         if self.show == Show::Name {
             return;
         }
-        while let Some(child) = self.people.first_child() {
-            if let Some(column) = child.downcast_ref::<gtk::Box>() {
-                if self.password_block.parent().as_ref() == Some(column.upcast_ref()) {
-                    column.remove(&self.password_block);
-                }
+        if let Some(parent) = self.password_block.parent() {
+            if let Ok(parent) = parent.downcast::<gtk::Box>() {
+                parent.remove(&self.password_block);
             }
+        }
+        while let Some(child) = self.people.first_child() {
             self.people.remove(&child);
         }
-        for (i, account) in self.accounts.iter().enumerate() {
-            let selected = i == self.selected.get();
-            let size = if selected { AVATAR } else { AVATAR_OTHER };
+        if self.chosen.get() && self.selected.get() < self.accounts.len() {
             let column = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .spacing(14)
-                .valign(gtk::Align::Start)
-                .margin_top(if selected {
-                    0
-                } else {
-                    (AVATAR - AVATAR_OTHER) / 2
-                })
+                .halign(gtk::Align::Center)
                 .build();
-            let person = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(10)
-                .build();
-            person.append(&avatar(account, size));
-            person.append(
-                &gtk::Label::builder()
-                    .label(account.display_name())
-                    .ellipsize(pango::EllipsizeMode::End)
-                    .max_width_chars(if selected { 24 } else { 17 })
-                    .css_classes([if selected {
-                        "elavo-greeter-name"
-                    } else {
-                        "elavo-greeter-name-other"
-                    }])
-                    .build(),
-            );
-            if selected {
-                column.append(&person);
-                column.append(&self.password_block);
-            } else {
-                let button = gtk::Button::builder()
-                    .child(&person)
-                    .css_classes(["elavo-greeter-person"])
-                    .tooltip_text(account.display_name())
-                    .build();
-                let weak = Rc::downgrade(self);
-                button.connect_clicked(move |_| {
-                    if let Some(screen) = weak.upgrade() {
-                        screen.select(i);
-                    }
-                });
-                column.append(&button);
-            }
+            column.append(&self.person_button(self.selected.get(), true));
+            column.append(&self.password_block);
             self.people.append(&column);
+        } else {
+            for index in 0..self.accounts.len() {
+                self.people.append(&self.person_button(index, false));
+            }
         }
     }
 
+    /// A list row has the photo on the left and the name on the right.
+    /// `back` is the chosen person: the photo sits above the name, and
+    /// clicking it returns to the list.
+    fn person_button(self: &Rc<Self>, index: usize, back: bool) -> gtk::Button {
+        let account = &self.accounts[index];
+        let name = gtk::Label::builder()
+            .label(account.display_name())
+            .ellipsize(pango::EllipsizeMode::End)
+            .max_width_chars(22)
+            .css_classes(["elavo-greeter-name"])
+            .build();
+        let body = if back {
+            name.set_justify(gtk::Justification::Center);
+            name.set_xalign(0.5);
+            let column = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(10)
+                .halign(gtk::Align::Center)
+                .build();
+            column.append(&avatar(account, AVATAR));
+            column.append(&name);
+            column.upcast::<gtk::Widget>()
+        } else {
+            name.set_xalign(0.0);
+            name.set_halign(gtk::Align::Start);
+            name.set_hexpand(true);
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(12)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .build();
+            row.append(&avatar(account, AVATAR));
+            row.append(&name);
+            row.upcast::<gtk::Widget>()
+        };
+        let button = gtk::Button::builder()
+            .child(&body)
+            .halign(if back {
+                gtk::Align::Center
+            } else {
+                gtk::Align::Fill
+            })
+            .hexpand(!back)
+            .css_classes(["elavo-greeter-person"])
+            .tooltip_text(account.display_name())
+            .build();
+        if back {
+            button.add_css_class("elavo-greeter-chosen");
+        }
+        let weak = Rc::downgrade(self);
+        button.connect_clicked(move |_| {
+            if let Some(screen) = weak.upgrade() {
+                if back {
+                    screen.clear_choice();
+                } else {
+                    screen.select(index);
+                }
+            }
+        });
+        button
+    }
+
     fn select(self: &Rc<Self>, index: usize) {
-        if index == self.selected.get() || index >= self.accounts.len() {
+        if index >= self.accounts.len() {
             return;
         }
         self.selected.set(index);
+        self.chosen.set(true);
         self.password.set_text("");
         self.message.set_visible(false);
         self.rebuild_people();
         self.show_wallpaper();
         self.password.grab_focus();
+    }
+
+    fn clear_choice(self: &Rc<Self>) {
+        self.chosen.set(false);
+        self.password.set_text("");
+        self.message.set_visible(false);
+        self.rebuild_people();
     }
 
     fn ask(&self, action: Power) {
@@ -722,7 +775,7 @@ impl Screen {
         self.stack.set_visible_child_name("accounts");
         if self.show == Show::Name && self.name.text().is_empty() {
             self.name.grab_focus();
-        } else {
+        } else if self.show == Show::Name || self.chosen.get() {
             self.password.grab_focus();
         }
     }
@@ -738,10 +791,15 @@ impl Screen {
         }
         let user = match self.show {
             Show::Name => self.name.text().trim().to_owned(),
-            Show::List => match self.selected_account() {
-                Some(account) => account.name.clone(),
-                None => return,
-            },
+            Show::List => {
+                if !self.chosen.get() {
+                    return;
+                }
+                match self.selected_account() {
+                    Some(account) => account.name.clone(),
+                    None => return,
+                }
+            }
         };
         if user.is_empty() {
             self.name.grab_focus();
