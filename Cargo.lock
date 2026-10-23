@@ -150,6 +150,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "elavo-input"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+]
+
+[[package]]
 name = "elavo-lens"
 version = "0.1.0"
 dependencies = [

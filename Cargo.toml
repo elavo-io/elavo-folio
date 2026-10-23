@@ -9,6 +9,7 @@ members = [
     "crates/elavo-switcher",
     "crates/elavo-switcher-settings",
     "crates/elavo-greeter",
+    "crates/elavo-input",
 ]
 
 [workspace.package]

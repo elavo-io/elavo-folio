@@ -1,0 +1,13 @@
+[package]
+name = "elavo-input"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wayland-client.workspace = true
+wayland-backend.workspace = true
+wayland-protocols = { workspace = true, features = ["unstable"] }
+wayland-scanner = "0.31.7"
+libc.workspace = true
