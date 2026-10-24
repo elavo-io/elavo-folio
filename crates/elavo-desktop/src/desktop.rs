@@ -89,6 +89,7 @@ pub struct Desktop {
     layout_path: PathBuf,
     layout_written: RefCell<String>,
     renaming: RefCell<Option<String>>,
+    rename_entry: RefCell<Option<gtk::Entry>>,
     rename_after: RefCell<Option<String>>,
     reload_queued: Cell<bool>,
     reload_gen: Cell<u64>,
@@ -160,6 +161,7 @@ impl Desktop {
             layout_path,
             layout_written: RefCell::new(String::new()),
             renaming: RefCell::new(None),
+            rename_entry: RefCell::new(None),
             rename_after: RefCell::new(None),
             reload_queued: Cell::new(false),
             reload_gen: Cell::new(0),
@@ -458,8 +460,13 @@ impl Desktop {
         window.add_controller(keys);
 
         let desktop = Rc::downgrade(self);
-        window.connect_is_active_notify(move |_| {
+        window.connect_is_active_notify(move |window| {
             if let Some(desktop) = desktop.upgrade() {
+                // Clicking a window leaves the name field without a focus
+                // change inside this surface.
+                if icon_monitor && !window.is_active() {
+                    desktop.after_rename(|_| {});
+                }
                 desktop.sync_focus();
             }
         });
@@ -562,15 +569,19 @@ impl Desktop {
             if desktop.suppress_click.replace(false) || desktop.dragging.get() {
                 return;
             }
-            let spread = desktop.model.borrow().spread().is_some();
-            desktop.model.borrow_mut().click_background();
-            if spread {
-                desktop.rebuild();
-            } else {
-                desktop.paint_selection();
-            }
-            let _ = backdrop_focus.grab_focus();
-            desktop.queue_changed();
+            let desktop = Rc::clone(&desktop);
+            let backdrop = backdrop_focus.clone();
+            desktop.after_rename(move |desktop| {
+                let spread = desktop.model.borrow().spread().is_some();
+                desktop.model.borrow_mut().click_background();
+                if spread {
+                    desktop.rebuild();
+                } else {
+                    desktop.paint_selection();
+                }
+                let _ = backdrop.grab_focus();
+                desktop.queue_changed();
+            });
         });
         backdrop.add_controller(click);
 
@@ -579,15 +590,19 @@ impl Desktop {
         let desktop = Rc::clone(self);
         let fixed_menu = fixed.clone();
         right.connect_pressed(move |_, _, x, y| {
-            let spread = desktop.model.borrow().spread().is_some();
-            desktop.model.borrow_mut().click_background();
-            if spread {
-                desktop.rebuild();
-            } else {
-                desktop.paint_selection();
-            }
-            desktop.popup_at(&fixed_menu, x as i32, y as i32);
-            desktop.queue_changed();
+            let desktop = Rc::clone(&desktop);
+            let fixed_menu = fixed_menu.clone();
+            desktop.after_rename(move |desktop| {
+                let spread = desktop.model.borrow().spread().is_some();
+                desktop.model.borrow_mut().click_background();
+                if spread {
+                    desktop.rebuild();
+                } else {
+                    desktop.paint_selection();
+                }
+                desktop.popup_at(&fixed_menu, x as i32, y as i32);
+                desktop.queue_changed();
+            });
         });
         backdrop.add_controller(right);
 
@@ -876,18 +891,29 @@ impl Desktop {
         let click = gtk::GestureClick::new();
         click.set_button(gdk::BUTTON_PRIMARY);
         let desktop = Rc::clone(self);
-        click.connect_pressed(move |_, _, _, _| {
+        click.connect_pressed(move |gesture, _, x, y| {
+            if desktop.pointer_on_rename_entry(gesture.widget(), x, y) {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
             desktop.suppress_click.set(false);
             desktop.dragging.set(false);
         });
         let desktop = Rc::clone(self);
         let id_click = id.clone();
-        click.connect_released(move |gesture, n_press, _, _| {
+        click.connect_released(move |gesture, n_press, x, y| {
             if desktop.suppress_click.replace(false) || desktop.dragging.get() {
                 return;
             }
+            if desktop.pointer_on_rename_entry(gesture.widget(), x, y) {
+                return;
+            }
             let (ctrl, shift) = click_mods(gesture);
-            desktop.on_icon_click(&id_click, n_press, ctrl, shift);
+            let desktop = Rc::clone(&desktop);
+            let id_click = id_click.clone();
+            desktop.after_rename(move |desktop| {
+                desktop.on_icon_click(&id_click, n_press, ctrl, shift);
+            });
         });
         root.add_controller(click);
 
@@ -896,8 +922,17 @@ impl Desktop {
         let desktop = Rc::clone(self);
         let id_right = id.clone();
         let root_right = root.clone();
-        right.connect_pressed(move |_, _, x, y| {
-            desktop.popup_icon(&root_right, &id_right, x, y);
+        right.connect_pressed(move |gesture, _, x, y| {
+            if desktop.pointer_on_rename_entry(gesture.widget(), x, y) {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            let desktop = Rc::clone(&desktop);
+            let root_right = root_right.clone();
+            let id_right = id_right.clone();
+            desktop.after_rename(move |desktop| {
+                desktop.popup_icon(&root_right, &id_right, x, y);
+            });
         });
         root.add_controller(right);
 
@@ -1319,17 +1354,23 @@ impl Desktop {
     }
 
     fn bind_rename(self: &Rc<Self>, entry: &gtk::Entry) {
+        *self.rename_entry.borrow_mut() = Some(entry.clone());
+
+        // The entry's text child holds the focus, so this controller's enter
+        // signal does not fire. `ready` turns on only after we focus it, so
+        // the leave that GTK emits while handing over focus is ignored.
         let focus = gtk::EventControllerFocus::new();
         let ready = Rc::new(Cell::new(false));
-        let ready_enter = Rc::clone(&ready);
-        focus.connect_enter(move |_| ready_enter.set(true));
         let desktop = Rc::clone(self);
         let entry_leave = entry.clone();
+        let ready_leave = Rc::clone(&ready);
         focus.connect_leave(move |_| {
-            if !ready.get() {
+            if !ready_leave.get() {
                 return;
             }
-            desktop.finish_rename(true, entry_leave.text().to_string());
+            let typed = entry_leave.text().to_string();
+            let desktop = Rc::clone(&desktop);
+            glib::idle_add_local_once(move || desktop.finish_rename(true, typed));
         });
         entry.add_controller(focus);
 
@@ -1358,6 +1399,7 @@ impl Desktop {
         let entry = entry.clone();
         glib::idle_add_local_once(move || {
             entry.grab_focus();
+            ready.set(true);
             let text = entry.text();
             let end = i32::from(entry.text_length());
             if let Some(dot) = text.rfind('.') {
@@ -1370,6 +1412,41 @@ impl Desktop {
         });
     }
 
+    /// Confirms a rename, then runs `then`. An invalid name stays in editing
+    /// and `then` does not run. With no rename in progress, `then` runs now.
+    fn after_rename(self: &Rc<Self>, then: impl FnOnce(&Rc<Self>) + 'static) {
+        if self.renaming.borrow().is_none() {
+            then(self);
+            return;
+        }
+        let typed = self
+            .rename_entry
+            .borrow()
+            .as_ref()
+            .map(|entry| entry.text().to_string())
+            .unwrap_or_default();
+        let desktop = Rc::clone(self);
+        glib::idle_add_local_once(move || {
+            desktop.finish_rename(true, typed);
+            if desktop.renaming.borrow().is_some() {
+                return;
+            }
+            then(&desktop);
+        });
+    }
+
+    /// A click on the name field itself, which keeps editing.
+    fn pointer_on_rename_entry(&self, widget: Option<gtk::Widget>, x: f64, y: f64) -> bool {
+        let Some(entry) = self.rename_entry.borrow().clone() else {
+            return false;
+        };
+        widget
+            .and_then(|widget| widget.pick(x, y, gtk::PickFlags::DEFAULT))
+            .is_some_and(|picked| {
+                picked == entry.clone().upcast::<gtk::Widget>() || picked.is_ancestor(&entry)
+            })
+    }
+
     fn finish_rename(self: &Rc<Self>, commit: bool, typed: String) {
         let Some(name) = self.renaming.borrow_mut().take() else {
             return;
@@ -1377,8 +1454,21 @@ impl Desktop {
         if commit && !self.apply_rename(&name, &typed) {
             *self.renaming.borrow_mut() = Some(name);
             self.set_keyboard(true);
+            let active = self
+                .icon_window
+                .borrow()
+                .as_ref()
+                .is_some_and(|window| window.is_active());
+            if active {
+                if let Some(entry) = self.rename_entry.borrow().clone() {
+                    glib::idle_add_local_once(move || {
+                        entry.grab_focus();
+                    });
+                }
+            }
             return;
         }
+        self.rename_entry.borrow_mut().take();
         self.set_keyboard(false);
         self.rebuild();
         if self.reload_queued.replace(false) {
