@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "elavo-greeter"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "glib-build-tools",
  "gtk4",

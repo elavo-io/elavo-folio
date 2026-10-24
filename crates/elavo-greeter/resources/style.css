@@ -101,6 +101,22 @@ window.elavo-greeter-window {
   box-shadow: 0 4px 16px alpha(#000000, 0.25);
 }
 
+/* Around the chosen picture, and only when another account exists, so the
+   picture is a way back to the list. Fades in and out. */
+.elavo-greeter-avatar-ring {
+  border-radius: 9999px;
+  box-shadow:
+    0 0 0 5px alpha(#ffffff, 0),
+    0 6px 18px alpha(#000000, 0);
+  transition: box-shadow 200ms ease-in-out;
+}
+
+.elavo-greeter-avatar-ring:hover {
+  box-shadow:
+    0 0 0 5px alpha(#ffffff, 0.55),
+    0 6px 18px alpha(#000000, 0.45);
+}
+
 .elavo-greeter-initial {
   color: #ffffff;
   font-weight: 600;
@@ -128,6 +144,13 @@ window.elavo-greeter-window {
 
 .elavo-greeter-person:hover {
   background-color: alpha(#ffffff, 0.16);
+}
+
+.elavo-greeter-person.elavo-greeter-chosen,
+.elavo-greeter-person.elavo-greeter-chosen:hover,
+.elavo-greeter-person.elavo-greeter-chosen:active {
+  background: none;
+  box-shadow: none;
 }
 
 /* Frosted pill fields. */

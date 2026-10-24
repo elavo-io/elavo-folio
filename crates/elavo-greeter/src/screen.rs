@@ -60,7 +60,8 @@ pub struct Screen {
     /// Whose wallpaper and, once chosen, whose password is on screen.
     selected: Cell<usize>,
     /// List mode shows the password only after a person is chosen. Login
-    /// starts with nobody chosen. The lock opens already chosen.
+    /// starts with nobody chosen when there is more than one account. One
+    /// account, and the lock, open already chosen.
     chosen: Cell<bool>,
     status: Rc<Status>,
     views: RefCell<Vec<View>>,
@@ -154,6 +155,18 @@ fn avatar(account: &Account, size: i32) -> gtk::Widget {
     frame.upcast()
 }
 
+/// The chosen person's picture when other accounts exist. Hovering it fades
+/// in the ring from the style sheet. Clicking it returns to the list.
+fn framed_avatar(account: &Account, size: i32) -> gtk::Widget {
+    let ring = gtk::Box::builder()
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(["elavo-greeter-avatar-ring"])
+        .build();
+    ring.append(&avatar(account, size));
+    ring.upcast()
+}
+
 /// The login screen's sun: the desktop's Elavo menu, cut down to the power
 /// section. Restart and Shut Down ask first, inside the screen.
 fn sun_menu(actions: &gio::SimpleActionGroup) -> gtk::MenuButton {
@@ -198,7 +211,10 @@ impl Screen {
                 let mut list = accounts::list();
                 list.extend(accounts::demo_people(demo_people));
                 let selected = accounts::last_user(&list).unwrap_or(0);
-                (list, selected, false)
+                // One account has nothing to choose. The password is showing
+                // when the screen appears.
+                let alone = list.len() == 1;
+                (list, selected, alone)
             }
         };
         let show = if kind == Kind::Lock { Show::List } else { show };
@@ -672,9 +688,9 @@ impl Screen {
     }
 
     /// A list row has the photo on the left and the name on the right.
-    /// `back` is the chosen person: the photo sits above the name, and
-    /// clicking it returns to the list.
-    fn person_button(self: &Rc<Self>, index: usize, back: bool) -> gtk::Button {
+    /// `back` is the chosen person: the photo sits above the name. With more
+    /// than one account, clicking it returns to the list.
+    fn person_button(self: &Rc<Self>, index: usize, back: bool) -> gtk::Widget {
         let account = &self.accounts[index];
         let name = gtk::Label::builder()
             .label(account.display_name())
@@ -682,6 +698,11 @@ impl Screen {
             .max_width_chars(22)
             .css_classes(["elavo-greeter-name"])
             .build();
+        let picture = if back && self.accounts.len() > 1 {
+            framed_avatar(account, AVATAR)
+        } else {
+            avatar(account, AVATAR)
+        };
         let body = if back {
             name.set_justify(gtk::Justification::Center);
             name.set_xalign(0.5);
@@ -690,7 +711,7 @@ impl Screen {
                 .spacing(10)
                 .halign(gtk::Align::Center)
                 .build();
-            column.append(&avatar(account, AVATAR));
+            column.append(&picture);
             column.append(&name);
             column.upcast::<gtk::Widget>()
         } else {
@@ -703,10 +724,14 @@ impl Screen {
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .build();
-            row.append(&avatar(account, AVATAR));
+            row.append(&picture);
             row.append(&name);
             row.upcast::<gtk::Widget>()
         };
+        // One account never returns to a list, so the picture is not a button.
+        if back && self.accounts.len() < 2 {
+            return body;
+        }
         let button = gtk::Button::builder()
             .child(&body)
             .halign(if back {
@@ -731,7 +756,7 @@ impl Screen {
                 }
             }
         });
-        button
+        button.upcast()
     }
 
     fn select(self: &Rc<Self>, index: usize) {

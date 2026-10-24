@@ -274,10 +274,11 @@ fn run_window(
     let monitor = display.monitors().item(0).and_downcast::<gdk::Monitor>();
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title(if backend == Backend::Demo {
-            "Elavo Greeter (demo)"
-        } else {
-            "Elavo Login"
+        .title(match (kind, backend, demo_people) {
+            (Kind::Lock, Backend::Demo, _) => "Elavo Lock",
+            (Kind::Login, Backend::Demo, 0) => "Elavo Login",
+            (Kind::Login, Backend::Demo, _) => "Elavo Login, several people",
+            _ => "Elavo Login",
         })
         .decorated(backend == Backend::Demo)
         .default_width(1280)
