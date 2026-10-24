@@ -1,0 +1,51 @@
+/* Not fully transparent. GTK draws nothing for a surface with nothing
+   visible, so an empty desktop would never be mapped (clicks fall through to
+   labwc) and removing the last icon would leave its old frame on screen. */
+window.elavo-desktop {
+  background-color: rgba(0, 0, 0, 0.004);
+}
+
+.elavo-desktop-hit {
+  background-color: transparent;
+}
+
+.elavo-desktop-icon {
+  padding: 2px;
+  border-radius: 8px;
+}
+
+.elavo-desktop-icon.drop-target {
+  background-color: alpha(var(--accent-bg-color, @theme_selected_bg_color), 0.35);
+}
+
+.elavo-desktop-label {
+  color: white;
+  text-shadow: 0 1px 2px alpha(black, 0.85);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.elavo-desktop-label.selected {
+  background-color: var(--accent-bg-color, @theme_selected_bg_color);
+  color: var(--accent-fg-color, @theme_selected_fg_color);
+  text-shadow: none;
+}
+
+.elavo-desktop-rubber {
+  background-color: alpha(var(--accent-bg-color, @theme_selected_bg_color), 0.28);
+  border: 1px solid var(--accent-bg-color, @theme_selected_bg_color);
+}
+
+.elavo-desktop-count {
+  background-color: var(--accent-bg-color, @theme_selected_bg_color);
+  color: var(--accent-fg-color, @theme_selected_fg_color);
+  border-radius: 8px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.elavo-desktop-rename {
+  min-height: 0;
+  padding: 0;
+}

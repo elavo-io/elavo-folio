@@ -8,7 +8,7 @@ prefix="${PREFIX:-/usr}"
 sysconfdir="${SYSCONFDIR:-/etc}"
 dest="${DESTDIR:-}"
 
-for bin in elavo-panel elavo-dock elavo-lens elavo-switcher elavo-input; do
+for bin in elavo-panel elavo-dock elavo-lens elavo-switcher elavo-input elavo-desktop; do
     install -Dm755 "target/release/${bin}" "${dest}${prefix}/bin/${bin}"
     install -Dm644 "data/systemd/user/${bin}.service" \
         "${dest}${prefix}/lib/systemd/user/${bin}.service"

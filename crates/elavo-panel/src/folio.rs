@@ -5,7 +5,9 @@
 //! Nautilus exports almost none of its menu over D-Bus. Items that act on
 //! the focused window go through the Folio Files plugin
 //! (`io.elavo.FolioFiles`), which runs inside Nautilus and calls the
-//! window's own actions.
+//! window's own actions. With no Files window focused, the same file
+//! commands go to `elavo-desktop` (`io.elavo.Desktop`), which draws the
+//! Desktop folder and mounted volumes.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -22,6 +24,9 @@ const FILE_MANAGER: &str = "org.freedesktop.FileManager1";
 const FILE_MANAGER_PATH: &str = "/org/freedesktop/FileManager1";
 const FOLIO_FILES: &str = "io.elavo.FolioFiles";
 const FOLIO_FILES_PATH: &str = "/io/elavo/FolioFiles";
+const DESKTOP_BUS: &str = "io.elavo.Desktop";
+const DESKTOP_PATH: &str = "/io/elavo/Desktop";
+const DESKTOP_IFACE: &str = "io.elavo.Desktop";
 
 /// Nothing focused, Nautilus, or one of Folio's own windows (the panel's
 /// dialogs, Dock Settings).
@@ -77,6 +82,8 @@ enum Route {
     /// An action on the focused Nautilus window, via `io.elavo.FolioFiles`.
     /// `folio.previous-tab` and `folio.next-tab` switch tabs in the plugin.
     Files(&'static str),
+    /// An action on the desktop, via `io.elavo.Desktop`, when Files is not focused.
+    Desktop(&'static str),
     /// `slot.files-view-mode`. List is 1, grid (icons) is 2.
     FilesMode(u32),
     Wm(Wm),
@@ -88,6 +95,10 @@ enum Needs {
     Always,
     /// A Nautilus window is focused.
     Focused,
+    /// A Nautilus window, or the desktop when Files is not focused.
+    Surface,
+    /// The desktop only. Off while a Files window is focused.
+    DesktopOnly,
     /// At least one Nautilus window exists.
     Windows,
     /// At least two Nautilus windows exist.
@@ -180,7 +191,7 @@ const ITEMS: &[Item] = &[
         section: 0,
         id: "new-folder",
         label: "New Folder",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.new-folder"),
     },
     Item {
@@ -196,7 +207,7 @@ const ITEMS: &[Item] = &[
         section: 0,
         id: "open",
         label: "Open",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.open-with-default-application"),
     },
     Item {
@@ -212,7 +223,7 @@ const ITEMS: &[Item] = &[
         section: 2,
         id: "get-info",
         label: "Get Info",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.properties"),
     },
     Item {
@@ -220,7 +231,7 @@ const ITEMS: &[Item] = &[
         section: 2,
         id: "rename",
         label: "Rename…",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.rename"),
     },
     Item {
@@ -236,7 +247,7 @@ const ITEMS: &[Item] = &[
         section: 3,
         id: "quick-look",
         label: "Quick Look",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.preview-selection"),
     },
     Item {
@@ -252,7 +263,7 @@ const ITEMS: &[Item] = &[
         section: 4,
         id: "trash",
         label: "Move to Trash",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.move-to-trash"),
     },
     Item {
@@ -284,7 +295,7 @@ const ITEMS: &[Item] = &[
         section: 1,
         id: "cut",
         label: "Cut",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.cut"),
     },
     Item {
@@ -292,7 +303,7 @@ const ITEMS: &[Item] = &[
         section: 1,
         id: "copy",
         label: "Copy",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.copy"),
     },
     Item {
@@ -300,7 +311,7 @@ const ITEMS: &[Item] = &[
         section: 1,
         id: "paste",
         label: "Paste",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.paste"),
     },
     Item {
@@ -308,7 +319,7 @@ const ITEMS: &[Item] = &[
         section: 2,
         id: "select-all",
         label: "Select All",
-        needs: Needs::Focused,
+        needs: Needs::Surface,
         route: files("view.select-all"),
     },
     Item {
@@ -342,6 +353,14 @@ const ITEMS: &[Item] = &[
         label: "Enter Full Screen",
         needs: Needs::Focused,
         route: Route::Wm(Wm::Fullscreen),
+    },
+    Item {
+        menu: "View",
+        section: 3,
+        id: "use-stacks",
+        label: "Use Stacks",
+        needs: Needs::DesktopOnly,
+        route: Route::Desktop("use-stacks"),
     },
     Item {
         menu: "Go",
@@ -522,6 +541,7 @@ const ITEMS: &[Item] = &[
 ];
 
 type WmHandler = Box<dyn Fn(Wm)>;
+type FocusHandler = Box<dyn Fn(bool)>;
 
 pub struct Folio {
     actions: gio::SimpleActionGroup,
@@ -531,6 +551,12 @@ pub struct Folio {
     query_gen: Cell<u64>,
     query_inflight: Cell<bool>,
     query_pending: Cell<bool>,
+    /// Bumped when a Files window takes focus so a late desktop reply is dropped.
+    desktop_gen: Cell<u64>,
+    desktop_inflight: Cell<bool>,
+    desktop_pending: Cell<bool>,
+    desktop_signals: RefCell<Vec<gio::SignalSubscription>>,
+    desktop_focus: RefCell<Option<FocusHandler>>,
     wm: RefCell<Option<WmHandler>>,
 }
 
@@ -543,10 +569,16 @@ impl Folio {
             query_gen: Cell::new(0),
             query_inflight: Cell::new(false),
             query_pending: Cell::new(false),
+            desktop_gen: Cell::new(0),
+            desktop_inflight: Cell::new(false),
+            desktop_pending: Cell::new(false),
+            desktop_signals: RefCell::new(Vec::new()),
+            desktop_focus: RefCell::new(None),
             wm: RefCell::new(None),
         });
         folio.build(window_list);
         folio.set_context(false, 0);
+        folio.listen_desktop();
         folio
     }
 
@@ -563,10 +595,20 @@ impl Folio {
         self.wm.replace(Some(Box::new(wm)));
     }
 
+    /// `focus` learns when the desktop takes or gives up the keyboard. labwc
+    /// leaves the last window activated while a layer surface has the
+    /// keyboard, so the window list alone would still name that window.
+    pub fn set_desktop_focus_handler(&self, focus: impl Fn(bool) + 'static) {
+        self.desktop_focus.replace(Some(Box::new(focus)));
+    }
+
     pub fn set_context(self: &Rc<Self>, nautilus_focused: bool, nautilus_windows: usize) {
         let was_focused = self.nautilus_focused.get();
         self.nautilus_focused.set(nautilus_focused);
-        if !nautilus_focused {
+        if nautilus_focused {
+            self.desktop_gen.set(self.desktop_gen.get().wrapping_add(1));
+            self.desktop_pending.set(false);
+        } else {
             self.query_gen.set(self.query_gen.get().wrapping_add(1));
             self.query_pending.set(false);
         }
@@ -578,7 +620,8 @@ impl Folio {
             }
             let enabled = match item.needs {
                 Needs::Always => true,
-                Needs::Focused => nautilus_focused,
+                Needs::Focused | Needs::Surface => nautilus_focused,
+                Needs::DesktopOnly => false,
                 Needs::Windows => nautilus_windows > 0,
                 Needs::Two => nautilus_windows >= 2,
                 Needs::Never => false,
@@ -587,6 +630,8 @@ impl Folio {
         }
         if nautilus_focused {
             self.query_files();
+        } else {
+            self.query_desktop();
         }
     }
 
@@ -651,10 +696,162 @@ impl Folio {
         });
     }
 
+    /// Ask the desktop which file commands can run on the current selection.
+    fn query_desktop(self: &Rc<Self>) {
+        if self.nautilus_focused.get() {
+            return;
+        }
+        if self.desktop_inflight.get() {
+            self.desktop_pending.set(true);
+            return;
+        }
+        self.desktop_inflight.set(true);
+        self.desktop_pending.set(false);
+        let generation = self.desktop_gen.get();
+        let mut actions = Vec::new();
+        let mut ids = Vec::new();
+        for item in ITEMS {
+            let Some(command) = desktop_command(item.route) else {
+                continue;
+            };
+            if !matches!(item.needs, Needs::Surface | Needs::DesktopOnly) {
+                continue;
+            }
+            actions.push(command.to_string());
+            ids.push(item.id);
+        }
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let reply = desktop_enabled(actions).await;
+            let stacks = desktop_stacks().await.ok();
+            let Some(folio) = weak.upgrade() else {
+                return;
+            };
+            folio.desktop_inflight.set(false);
+            if folio.desktop_gen.get() != generation || folio.nautilus_focused.get() {
+                return;
+            }
+            if let Some(on) = stacks {
+                folio.set_stacks_state(on);
+            }
+            match reply {
+                Ok(flags) => {
+                    for (id, enabled) in ids.into_iter().zip(flags) {
+                        folio.set_enabled(id, enabled);
+                    }
+                }
+                Err(err) => {
+                    glib::g_warning!("elavo-panel", "desktop: {err}");
+                    for id in ids {
+                        folio.set_enabled(id, false);
+                    }
+                }
+            }
+            if folio.desktop_pending.get() {
+                folio.query_desktop();
+            }
+        });
+    }
+
+    fn set_stacks_state(&self, on: bool) {
+        if let Some(action) = self
+            .actions
+            .lookup_action("use-stacks")
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_state(&on.to_variant());
+        }
+    }
+
+    fn listen_desktop(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let Ok(bus) = gio::bus_get_future(gio::BusType::Session).await else {
+                return;
+            };
+            let Some(folio) = weak.upgrade() else {
+                return;
+            };
+            let owner = Rc::downgrade(&folio);
+            let subscription = bus.subscribe_to_signal(
+                Some(DESKTOP_BUS),
+                Some(DESKTOP_IFACE),
+                Some("Changed"),
+                Some(DESKTOP_PATH),
+                None,
+                gio::DBusSignalFlags::NONE,
+                move |signal| {
+                    let Some(folio) = owner.upgrade() else {
+                        return;
+                    };
+                    if folio.nautilus_focused.get() {
+                        return;
+                    }
+                    let params = signal.parameters;
+                    if params.n_children() > 0 {
+                        if let Some(on) = params.child_value(0).get::<bool>() {
+                            folio.set_stacks_state(on);
+                        }
+                    }
+                    folio.query_desktop();
+                },
+            );
+            let owner = Rc::downgrade(&folio);
+            let focus = bus.subscribe_to_signal(
+                Some(DESKTOP_BUS),
+                Some(DESKTOP_IFACE),
+                Some("Focused"),
+                Some(DESKTOP_PATH),
+                None,
+                gio::DBusSignalFlags::NONE,
+                move |signal| {
+                    let Some(folio) = owner.upgrade() else {
+                        return;
+                    };
+                    let params = signal.parameters;
+                    let Some(on) = (params.n_children() > 0)
+                        .then(|| params.child_value(0).get::<bool>())
+                        .flatten()
+                    else {
+                        return;
+                    };
+                    let handler = folio.desktop_focus.borrow();
+                    if let Some(handler) = handler.as_ref() {
+                        handler(on);
+                    }
+                },
+            );
+            folio
+                .desktop_signals
+                .borrow_mut()
+                .extend([subscription, focus]);
+            let owner = Rc::downgrade(&folio);
+            gio::bus_watch_name_on_connection(
+                &bus,
+                DESKTOP_BUS,
+                gio::BusNameWatcherFlags::NONE,
+                |_, _, _| {},
+                move |_, _| {
+                    let Some(folio) = owner.upgrade() else {
+                        return;
+                    };
+                    let handler = folio.desktop_focus.borrow();
+                    if let Some(handler) = handler.as_ref() {
+                        handler(false);
+                    }
+                },
+            );
+        });
+    }
+
     fn build(self: &Rc<Self>, window_list: &gio::Menu) {
         let applications = applications_dir().is_some();
         for item in ITEMS {
-            let action = gio::SimpleAction::new(item.id, None);
+            let action = if item.id == "use-stacks" {
+                gio::SimpleAction::new_stateful(item.id, None, &false.to_variant())
+            } else {
+                gio::SimpleAction::new(item.id, None)
+            };
             let weak = Rc::downgrade(self);
             let route = item.route;
             action.connect_activate(move |_, _| {
@@ -713,7 +910,18 @@ impl Folio {
                     show_folder(uri);
                 }
             }
-            Route::Files(action) => files_call(action, None),
+            Route::Files(action) => {
+                if self.nautilus_focused.get() {
+                    files_call(action, None);
+                } else if let Some(command) = desktop_command(Route::Files(action)) {
+                    desktop_call(command);
+                }
+            }
+            Route::Desktop(action) => {
+                if !self.nautilus_focused.get() {
+                    desktop_call(action);
+                }
+            }
             Route::FilesMode(mode) => files_call("slot.files-view-mode", Some(mode)),
             Route::Wm(wm) => {
                 if let Some(handler) = self.wm.borrow().as_ref() {
@@ -861,6 +1069,87 @@ async fn files_enabled(actions: Vec<String>) -> Result<Vec<bool>, glib::Error> {
     Ok(flags)
 }
 
+fn desktop_command(route: Route) -> Option<&'static str> {
+    match route {
+        Route::Files(action) => Some(match action {
+            "view.new-folder" => "new-folder",
+            "view.open-with-default-application" => "open",
+            "view.properties" => "get-info",
+            "view.preview-selection" => "quick-look",
+            "view.rename" => "rename",
+            "view.move-to-trash" => "move-to-trash",
+            "view.cut" => "cut",
+            "view.copy" => "copy",
+            "view.paste" => "paste",
+            "view.select-all" => "select-all",
+            _ => return None,
+        }),
+        Route::Desktop(action) => Some(action),
+        _ => None,
+    }
+}
+
+fn desktop_call(action: &'static str) {
+    glib::spawn_future_local(async move {
+        let call = async {
+            let bus = gio::bus_get_future(gio::BusType::Session).await?;
+            bus.call_future(
+                Some(DESKTOP_BUS),
+                DESKTOP_PATH,
+                DESKTOP_IFACE,
+                "Activate",
+                Some(&(action.to_string(),).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                -1,
+            )
+            .await
+        };
+        if let Err(err) = call.await {
+            glib::g_warning!("elavo-panel", "desktop {action}: {err}");
+        }
+    });
+}
+
+async fn desktop_enabled(actions: Vec<String>) -> Result<Vec<bool>, glib::Error> {
+    let bus = gio::bus_get_future(gio::BusType::Session).await?;
+    let reply = bus
+        .call_future(
+            Some(DESKTOP_BUS),
+            DESKTOP_PATH,
+            DESKTOP_IFACE,
+            "Enabled",
+            Some(&(actions,).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            -1,
+        )
+        .await?;
+    let array = reply.child_value(0);
+    let mut flags = Vec::with_capacity(array.n_children());
+    for index in 0..array.n_children() {
+        flags.push(array.child_value(index).get::<bool>().unwrap_or(false));
+    }
+    Ok(flags)
+}
+
+async fn desktop_stacks() -> Result<bool, glib::Error> {
+    let bus = gio::bus_get_future(gio::BusType::Session).await?;
+    let reply = bus
+        .call_future(
+            Some(DESKTOP_BUS),
+            DESKTOP_PATH,
+            DESKTOP_IFACE,
+            "Stacks",
+            None,
+            None,
+            gio::DBusCallFlags::NONE,
+            -1,
+        )
+        .await?;
+    Ok(reply.child_value(0).get::<bool>().unwrap_or(false))
+}
+
 fn show_folder(uri: String) {
     glib::spawn_future_local(async move {
         let call = async {
@@ -924,6 +1213,48 @@ mod tests {
                 Route::FilesMode(mode) => assert!(mode == 1 || mode == 2, "{}", item.id),
                 _ => {}
             }
+        }
+    }
+
+    #[test]
+    fn desktop_commands_cover_the_file_surface() {
+        for item in ITEMS {
+            if item.needs == Needs::Surface {
+                assert!(
+                    desktop_command(item.route).is_some(),
+                    "{} has no desktop command",
+                    item.id
+                );
+            }
+        }
+        assert!(ITEMS.iter().any(|item| {
+            item.id == "use-stacks" && item.needs == Needs::DesktopOnly && item.menu == "View"
+        }));
+    }
+
+    #[test]
+    fn window_commands_stay_off_the_desktop() {
+        for id in [
+            "new-tab",
+            "close",
+            "make-link",
+            "add-to-sidebar",
+            "find",
+            "icons",
+            "list",
+            "sidebar",
+            "fullscreen",
+            "back",
+            "forward",
+            "enclosing",
+            "go-to-folder",
+            "minimize",
+            "zoom",
+            "previous-tab",
+            "next-tab",
+        ] {
+            let item = ITEMS.iter().find(|item| item.id == id).unwrap();
+            assert_eq!(item.needs, Needs::Focused, "{id}");
         }
     }
 }

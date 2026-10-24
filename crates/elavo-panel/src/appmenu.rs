@@ -76,6 +76,8 @@ pub struct AppMenu {
     listed: RefCell<Vec<(String, String)>>,
     generation: Cell<u64>,
     queued: Cell<bool>,
+    /// The desktop has the keyboard. It counts as no window focused.
+    desktop_focused: Cell<bool>,
 }
 
 impl AppMenu {
@@ -98,12 +100,21 @@ impl AppMenu {
             listed: RefCell::default(),
             generation: Cell::new(0),
             queued: Cell::new(false),
+            desktop_focused: Cell::new(false),
         });
         {
             let weak = Rc::downgrade(&menu);
             menu.folio.set_wm_handler(move |wm| {
                 if let Some(menu) = weak.upgrade() {
                     menu.folio_wm(wm);
+                }
+            });
+            let weak = Rc::downgrade(&menu);
+            menu.folio.set_desktop_focus_handler(move |on| {
+                if let Some(menu) = weak.upgrade() {
+                    if menu.desktop_focused.replace(on) != on {
+                        menu.refresh_shown(false);
+                    }
                 }
             });
         }
@@ -425,7 +436,11 @@ impl AppMenu {
     fn refresh_shown(self: &Rc<Self>, force: bool) {
         let (focused, nautilus_windows) = {
             let focus = self.focus.borrow();
-            let focused = focus.focused().map(str::to_owned);
+            let focused = if self.desktop_focused.get() {
+                None
+            } else {
+                focus.focused().map(str::to_owned)
+            };
             let nautilus_windows = focus.windows_of(folio::NAUTILUS);
             (focused, nautilus_windows)
         };
