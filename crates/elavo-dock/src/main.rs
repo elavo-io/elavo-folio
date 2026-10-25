@@ -67,6 +67,10 @@ pub struct Dock {
 impl Dock {
     fn new(app: &gtk::Application) -> Rc<Self> {
         let display = gdk::Display::default().expect("no display");
+        // The bar uses the theme's colors. GTK loads the dark sheet only
+        // when this is set, which System Settings does for itself. The dock
+        // has to do it too, or it stays on the light sheet.
+        follow_color_scheme();
         let css = gtk::CssProvider::new();
         css.load_from_string(STYLE);
         gtk::style_context_add_provider_for_display(
@@ -1006,6 +1010,57 @@ fn parse_args(args: &[std::ffi::OsString]) -> Options {
     Options {
         activate: value("--activate").and_then(|n| usize::try_from(n - 1).ok()),
         settings: args.iter().any(|a| a == "--settings"),
+    }
+}
+
+/// `org.gnome.desktop.interface` `color-scheme`. Anything else is light,
+/// including an empty value and `prefer-light`.
+fn scheme_is_dark(value: &str) -> bool {
+    value == "prefer-dark"
+}
+
+/// Load the dark theme sheet while the color scheme is dark, and switch
+/// when it changes. The settings object is kept so the signal stays connected.
+fn follow_color_scheme() {
+    let Some(source) = gio::SettingsSchemaSource::default() else {
+        return;
+    };
+    let Some(schema) = source.lookup("org.gnome.desktop.interface", true) else {
+        return;
+    };
+    if !schema.has_key("color-scheme") {
+        return;
+    }
+    let desktop = gio::Settings::new("org.gnome.desktop.interface");
+    let apply = {
+        let desktop = desktop.clone();
+        move || {
+            let Some(settings) = gtk::Settings::default() else {
+                return;
+            };
+            settings.set_gtk_application_prefer_dark_theme(scheme_is_dark(
+                desktop.string("color-scheme").as_str(),
+            ));
+        }
+    };
+    apply();
+    desktop.connect_changed(Some("color-scheme"), move |_, _| apply());
+    thread_local! {
+        static HELD: RefCell<Option<gio::Settings>> = const { RefCell::new(None) };
+    }
+    HELD.with(|slot| slot.replace(Some(desktop)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scheme_is_dark;
+
+    #[test]
+    fn only_prefer_dark_selects_the_dark_sheet() {
+        assert!(scheme_is_dark("prefer-dark"));
+        assert!(!scheme_is_dark("prefer-light"));
+        assert!(!scheme_is_dark("default"));
+        assert!(!scheme_is_dark(""));
     }
 }
 
