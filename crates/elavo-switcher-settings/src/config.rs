@@ -316,7 +316,7 @@ impl Default for Settings {
             show_application_names: false,
             show_window_status: false,
             title_truncation: Truncation::Tail,
-            reveal_delay_ms: 35,
+            reveal_delay_ms: 10,
             stay_open_on_release: false,
             stay_open_on_quick_tap: false,
             sort_order: SortOrder::RecentApps,
@@ -695,7 +695,7 @@ mod tests {
         assert!(!d.fuzzy_search);
         assert!(!d.hover_actions);
         assert!(d.show_minimized);
-        assert_eq!(d.reveal_delay_ms, 35);
+        assert_eq!(d.reveal_delay_ms, 10);
     }
 
     #[test]

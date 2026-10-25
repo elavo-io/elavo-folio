@@ -29,18 +29,22 @@ const DESKTOP_PATH: &str = "/io/elavo/Desktop";
 const DESKTOP_IFACE: &str = "io.elavo.Desktop";
 
 /// Nothing focused, Nautilus, or one of Folio's own windows (the panel's
-/// dialogs, Dock Settings).
+/// dialogs, the dock, the desktop). System Settings is its own application.
+const SYSTEM_SETTINGS: &str = "io.elavo.SystemSettings";
+
 pub fn is_folio(app_id: Option<&str>) -> bool {
     match app_id {
         None => true,
         Some(NAUTILUS) => true,
+        Some(SYSTEM_SETTINGS) => false,
         Some(id) => id.starts_with("io.elavo."),
     }
 }
 
 /// A window that belongs to Folio: Nautilus, or one of Folio's own programs.
+/// System Settings is not one of them, so Hide Others can hide it.
 pub fn is_folio_window(app_id: &str) -> bool {
-    app_id == NAUTILUS || app_id.starts_with("io.elavo.")
+    app_id != SYSTEM_SETTINGS && (app_id == NAUTILUS || app_id.starts_with("io.elavo."))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1182,6 +1186,9 @@ mod tests {
         assert!(is_folio(Some(NAUTILUS)));
         assert!(is_folio(Some("io.elavo.Panel")));
         assert!(is_folio(Some("io.elavo.Dock")));
+        assert!(!is_folio(Some("io.elavo.SystemSettings")));
+        assert!(!is_folio_window("io.elavo.SystemSettings"));
+        assert!(is_folio_window("io.elavo.Panel"));
         assert!(!is_folio(Some("org.mozilla.firefox")));
         assert!(!is_folio(Some("cursor")));
         assert!(!is_folio(Some("")));
