@@ -2018,10 +2018,12 @@ impl Desktop {
             make_shortcut(&entry, &dest);
         }
         if files.is_empty() || !offered.intersects(gdk::DragAction::MOVE | gdk::DragAction::COPY) {
-            return if linked {
-                gdk::DragAction::LINK & offered
-            } else {
-                gdk::DragAction::empty()
+            // Files offers an entry as a copy, since Wayland has no link.
+            // Either way the source keeps it.
+            return match linked {
+                true if offered.contains(gdk::DragAction::COPY) => gdk::DragAction::COPY,
+                true => gdk::DragAction::LINK & offered,
+                false => gdk::DragAction::empty(),
             };
         }
         let disk = filesystem_id(&gio::File::for_path(&dest));
