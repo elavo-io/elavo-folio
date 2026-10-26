@@ -1076,19 +1076,6 @@ fn follow_color_scheme() {
     HELD.with(|slot| slot.replace(Some(desktop)));
 }
 
-#[cfg(test)]
-mod tests {
-    use super::scheme_is_dark;
-
-    #[test]
-    fn only_prefer_dark_selects_the_dark_sheet() {
-        assert!(scheme_is_dark("prefer-dark"));
-        assert!(!scheme_is_dark("prefer-light"));
-        assert!(!scheme_is_dark("default"));
-        assert!(!scheme_is_dark(""));
-    }
-}
-
 fn main() -> glib::ExitCode {
     let app = gtk::Application::builder()
         .application_id(APP_ID)
@@ -1111,4 +1098,17 @@ fn main() -> glib::ExitCode {
         glib::ExitCode::SUCCESS
     });
     app.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scheme_is_dark;
+
+    #[test]
+    fn only_prefer_dark_selects_the_dark_sheet() {
+        assert!(scheme_is_dark("prefer-dark"));
+        assert!(!scheme_is_dark("prefer-light"));
+        assert!(!scheme_is_dark("default"));
+        assert!(!scheme_is_dark(""));
+    }
 }
