@@ -1,5 +1,6 @@
 //! Icons for `~/Desktop` and mounted volumes, drawn on the wallpaper.
 
+mod area;
 mod desktop;
 mod model;
 mod thumbs;

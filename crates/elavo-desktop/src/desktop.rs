@@ -11,6 +11,7 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
+use crate::area::Area;
 use crate::model::{
     available_name, new_folder_name, show_mount, Dir, FileRec, GroupBy, Id, Item, Kind, Layout,
     Model, MountFacts, MountRec, Slot, Times, CELL_H, CELL_W,
@@ -446,7 +447,7 @@ impl Desktop {
         rubber.set_can_target(false);
         rubber.set_visible(false);
         fixed.put(&rubber, 0.0, 0.0);
-        window.set_child(Some(&fixed));
+        window.set_child(Some(&Area::new(&fixed)));
 
         let keys = gtk::EventControllerKey::new();
         let desktop = Rc::clone(self);
