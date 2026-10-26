@@ -138,6 +138,15 @@ impl Dock {
         }
 
         let weak = Rc::downgrade(&dock);
+        let apps = elavo_common::apps::watch(move || {
+            if let Some(dock) = weak.upgrade() {
+                dock.index.replace(AppIndex::load());
+                dock.refresh();
+            }
+        });
+        dock.monitors.borrow_mut().extend(apps);
+
+        let weak = Rc::downgrade(&dock);
         dock.badges.start(move || {
             if let Some(dock) = weak.upgrade() {
                 dock.refresh();
@@ -298,9 +307,18 @@ impl Dock {
                 minimized: t.minimized,
             })
             .collect();
+        // A NoDisplay application's dialog, such as the Applications
+        // service asking Uninstall or Keep, is not an application to reopen.
+        let recents: Vec<String> = self
+            .recents
+            .borrow()
+            .iter()
+            .filter(|id| index.get(id).is_some_and(|e| e.shown))
+            .cloned()
+            .collect();
         let mut sections = model::sections(
             &self.pins.borrow(),
-            &self.recents.borrow(),
+            &recents,
             |id| index.get(id).is_some(),
             &windows,
             |app_id| {

@@ -52,6 +52,9 @@ impl AppEntry {
 /// export trees, first match per desktop ID, in XDG precedence order.
 pub struct AppIndex {
     entries: Vec<AppEntry>,
+    /// Desktop IDs an AppImage gave itself when it ran from an Applications
+    /// entry, and the entry's ID.
+    aliases: Vec<(String, String)>,
 }
 
 fn application_dirs() -> Vec<PathBuf> {
@@ -113,6 +116,11 @@ pub fn shared_applications_dir() -> PathBuf {
 /// its application has everywhere else, so a pin made from an entry and one
 /// made from the application are the same pin.
 fn bundle_entries() -> Vec<AppEntry> {
+    bundles().into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// [`bundle_entries`] with each entry's resolved directory.
+fn bundles() -> Vec<(PathBuf, AppEntry)> {
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
     for folder in [home_applications_dir(), shared_applications_dir()] {
@@ -138,11 +146,34 @@ fn bundle_entries() -> Vec<AppEntry> {
                 },
             };
             if seen.insert(id.clone()) {
-                entries.extend(entry(id, &launch));
+                let resolved = dir.canonicalize().unwrap_or(dir);
+                entries.extend(entry(id, &launch).map(|e| (resolved, e)));
             }
         }
     }
     entries
+}
+
+/// The `.eapp` directory a desktop file's program is in, when something
+/// other than the Applications service wrote it. AppImages such as Patchy
+/// write their own desktop file and icons the first time they run.
+fn runs_from_bundle(info: &DesktopAppInfo) -> Option<PathBuf> {
+    if info.string("X-Elavo-Id").is_some() {
+        return None;
+    }
+    // `executable()` keeps the quotes around a quoted path.
+    let exec = info
+        .string("Exec")
+        .and_then(|e| glib::shell_parse_argv(e.as_str()).ok())
+        .and_then(|argv| argv.into_iter().next())
+        .map(PathBuf::from);
+    let try_exec = info.string("TryExec").map(|s| PathBuf::from(s.as_str()));
+    [exec, try_exec].into_iter().flatten().find_map(|program| {
+        program
+            .ancestors()
+            .find(|a| a.extension().is_some_and(|e| e == "eapp"))
+            .map(Path::to_path_buf)
+    })
 }
 
 /// None for `Hidden=true` and for files that are not applications.
@@ -173,16 +204,31 @@ impl AppIndex {
                 entries.extend(entry(id, &path));
             }
         }
+        let bundles = bundles();
+        // A desktop file an AppImage wrote for itself names the entry it
+        // runs from, so its windows and recents belong to that entry. Once
+        // the entry is gone, so is the application.
+        let mut aliases = Vec::new();
+        entries.retain(|e| {
+            let Some(dir) = runs_from_bundle(&e.info) else {
+                return true;
+            };
+            let dir = dir.canonicalize().ok();
+            if let Some((_, bundle)) = bundles.iter().find(|(d, _)| Some(d) == dir.as_ref()) {
+                aliases.push((e.id.clone(), bundle.id.clone()));
+            }
+            false
+        });
         // An entry in an Applications folder carries the icon picked for it
         // there, so its launch.desktop stands in for the application's own.
-        for bundle in bundle_entries() {
+        for (_, bundle) in bundles {
             match entries.iter_mut().find(|e| e.id == bundle.id) {
                 Some(existing) => *existing = bundle,
                 None => entries.push(bundle),
             }
         }
         entries.sort_by_key(|e| e.name.to_lowercase());
-        Self { entries }
+        Self { entries, aliases }
     }
 
     /// The installs in the Applications folders: each `*.eapp` directory's
@@ -190,7 +236,10 @@ impl AppIndex {
     pub fn load_applications_folders() -> Self {
         let mut entries = bundle_entries();
         entries.sort_by_key(|e| e.name.to_lowercase());
-        Self { entries }
+        Self {
+            entries,
+            aliases: Vec::new(),
+        }
     }
 
     /// Applications the launcher lists.
@@ -208,6 +257,14 @@ impl AppIndex {
     /// a shown one.
     pub fn match_app_id(&self, app_id: &str) -> Option<&AppEntry> {
         let to_candidates = |shown: bool| -> Vec<Candidate> {
+            let aliases = self
+                .aliases
+                .iter()
+                .filter(|(_, to)| self.get(to).is_some_and(|e| e.shown == shown))
+                .map(|(alias, _)| Candidate {
+                    id: alias,
+                    wm_class: None,
+                });
             self.entries
                 .iter()
                 .filter(|e| e.shown == shown)
@@ -215,12 +272,48 @@ impl AppIndex {
                     id: &e.id,
                     wm_class: e.wm_class.as_deref(),
                 })
+                .chain(aliases)
                 .collect()
         };
         let id = match_app_id(app_id, &to_candidates(true))
             .or_else(|| match_app_id(app_id, &to_candidates(false)))?;
+        let id = self
+            .aliases
+            .iter()
+            .find(|(alias, _)| alias == id)
+            .map_or(id, |(_, to)| to.as_str());
         self.get(id)
     }
+}
+
+/// Calls `changed` shortly after an application is installed, removed, or
+/// given a new icon. Keep the monitors alive for as long as it should.
+pub fn watch(changed: impl Fn() + 'static) -> Vec<gio::FileMonitor> {
+    let changed = std::rc::Rc::new(changed);
+    let pending = std::rc::Rc::new(std::cell::Cell::new(false));
+    let mut dirs = application_dirs();
+    dirs.push(home_applications_dir());
+    dirs.push(shared_applications_dir());
+    dirs.into_iter()
+        .filter(|d| d.is_dir())
+        .filter_map(|dir| {
+            let monitor = gio::File::for_path(&dir)
+                .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
+                .ok()?;
+            let (changed, pending) = (changed.clone(), pending.clone());
+            monitor.connect_changed(move |_, _, _, _| {
+                if pending.replace(true) {
+                    return;
+                }
+                let (changed, pending) = (changed.clone(), pending.clone());
+                glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                    pending.set(false);
+                    changed();
+                });
+            });
+            Some(monitor)
+        })
+        .collect()
 }
 
 pub fn launch(info: &DesktopAppInfo, action: Option<&str>) {
@@ -232,5 +325,56 @@ pub fn launch(info: &DesktopAppInfo, action: Option<&str>) {
                 glib::g_warning!("elavo", "launching {:?} failed: {err}", info.id());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(extra: &str) -> DesktopAppInfo {
+        let file = glib::KeyFile::new();
+        let text = format!("[Desktop Entry]\nType=Application\nName=Patchy\n{extra}\n");
+        file.load_from_data(&text, glib::KeyFileFlags::NONE)
+            .unwrap();
+        DesktopAppInfo::from_keyfile(&file).unwrap()
+    }
+
+    /// GIO skips a desktop file whose program does not exist.
+    fn bundle(test: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir()
+            .join(format!("elavo-common-{test}-{}", std::process::id()))
+            .join("Patchy.eapp");
+        std::fs::create_dir_all(&dir).unwrap();
+        for program in ["Patchy(2).AppImage", "run"] {
+            let path = dir.join(program);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_desktop_file_an_appimage_wrote_for_itself_names_its_entry() {
+        let dir = bundle("own");
+        let own = info(&format!(
+            "Exec=\"{}\" %F",
+            dir.join("Patchy(2).AppImage").display()
+        ));
+        assert_eq!(runs_from_bundle(&own), Some(dir.clone()));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn exports_and_other_applications_are_left_alone() {
+        let dir = bundle("export");
+        let export = info(&format!(
+            "Exec={} %F\nX-Elavo-Id=elavo-appimage-patchy",
+            dir.join("run").display()
+        ));
+        assert_eq!(runs_from_bundle(&export), None);
+        assert_eq!(runs_from_bundle(&info("Exec=sh -c true")), None);
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 }
