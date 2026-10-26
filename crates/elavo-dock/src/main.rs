@@ -561,6 +561,15 @@ impl Dock {
             .cloned()
     }
 
+    fn has_windows(&self, desktop_id: &str) -> bool {
+        let sections = self.sections.borrow();
+        sections
+            .apps
+            .iter()
+            .chain(&sections.recents)
+            .any(|i| i.desktop_id.as_deref() == Some(desktop_id) && i.running())
+    }
+
     pub fn other(&self, key: &str) -> Option<Other> {
         let uri = key.strip_prefix(OTHER_PREFIX)?;
         self.others.borrow().iter().find(|o| o.uri == uri).cloned()
@@ -909,7 +918,7 @@ impl Host for HostRef {
             .filter_map(|f| dock.desktop_id_for(f))
             .collect();
         if ids.len() == files.len() {
-            Payload::Apps(ids)
+            Payload::Apps(ids, files.to_vec())
         } else {
             Payload::Files(files.to_vec())
         }
@@ -955,8 +964,24 @@ impl Host for HostRef {
                 dock.place_others(&[other.uri], slot);
                 true
             }
-            (Intent::Pin { slot }, Payload::Apps(ids)) => {
+            (Intent::Pin { slot }, Payload::Apps(ids, _)) => {
                 dock.pin_at(&ids, slot, None);
+                true
+            }
+            // An application that is open cannot be deleted; the
+            // Applications service says why.
+            (Intent::Trash, Payload::Apps(ids, files)) => {
+                if let Some(open) = ids.iter().find(|id| dock.has_windows(id)) {
+                    let name = dock
+                        .index
+                        .borrow()
+                        .get(open)
+                        .map(|e| e.name.clone())
+                        .unwrap_or_else(|| open.trim_end_matches(".desktop").to_owned());
+                    files::tell_open(&name);
+                    return false;
+                }
+                files::trash(files);
                 true
             }
             (Intent::AddOther { slot }, Payload::Files(files)) => {

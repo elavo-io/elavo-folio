@@ -121,6 +121,36 @@ pub fn trash(files: Vec<gio::File>) {
     });
 }
 
+/// Asks the Applications service (elavo-applications) to say that `name`
+/// is open and has to be quit before it goes to the Trash.
+pub fn tell_open(name: &str) {
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        return;
+    };
+    let params = (
+        "open",
+        vec![glib::Variant::from(name).to_variant()],
+        std::collections::HashMap::<String, glib::Variant>::new(),
+    )
+        .to_variant();
+    bus.call(
+        Some("io.elavo.Applications"),
+        "/io/elavo/Applications",
+        "org.freedesktop.Application",
+        "ActivateAction",
+        Some(&params),
+        None,
+        gio::DBusCallFlags::NONE,
+        2000,
+        gio::Cancellable::NONE,
+        |result| {
+            if let Err(err) = result {
+                glib::g_warning!("elavo-dock", "telling the Applications service: {err}");
+            }
+        },
+    );
+}
+
 fn autostart_path(id: &str) -> PathBuf {
     glib::user_config_dir().join("autostart").join(id)
 }

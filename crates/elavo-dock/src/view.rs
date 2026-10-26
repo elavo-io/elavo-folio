@@ -115,8 +115,9 @@ pub enum Intent {
 pub enum Payload {
     /// A dock item; the key is in [`Host::dragging`].
     Internal,
-    /// Desktop IDs of dropped application files.
-    Apps(Vec<String>),
+    /// Desktop IDs of dropped application files, and the files, for a drop
+    /// on the trash.
+    Apps(Vec<String>, Vec<gio::File>),
     Files(Vec<gio::File>),
     /// The file list has not arrived yet.
     Pending,
@@ -1950,9 +1951,12 @@ impl DockView {
                         }),
                     }
                 }),
-                Some(Payload::Apps(_)) => Some(Intent::Pin {
-                    slot: state.slot(&[Section::Apps], None, u),
-                }),
+                Some(Payload::Apps(..)) => match over.map(|t| t.tile.section) {
+                    Some(Section::Trash) => Some(Intent::Trash),
+                    _ => Some(Intent::Pin {
+                        slot: state.slot(&[Section::Apps], None, u),
+                    }),
+                },
                 Some(Payload::Files(files)) => {
                     let centered = over.is_some_and(|t| {
                         let (iu, _, z) = state.icon_box(t);

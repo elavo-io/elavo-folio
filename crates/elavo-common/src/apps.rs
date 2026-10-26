@@ -65,6 +65,11 @@ fn application_dirs() -> Vec<PathBuf> {
             .map(|d| d.join("applications")),
     );
     dirs.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+    // AppImages in /Applications, exported by elavo-applications. The
+    // session's XDG_DATA_DIRS names it too, once environment.d has run.
+    dirs.push(PathBuf::from(
+        "/var/lib/elavo-applications/exports/share/applications",
+    ));
     dirs.push(PathBuf::from("/usr/share/applications"));
 
     let mut seen = HashSet::new();
@@ -95,6 +100,51 @@ pub fn home_applications_dir() -> PathBuf {
     glib::home_dir().join("Applications")
 }
 
+/// The Applications folder every account shares.
+pub fn shared_applications_dir() -> PathBuf {
+    std::env::var_os("ELAVO_SHARED_APPLICATIONS")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/Applications"))
+}
+
+/// Every `*.eapp` entry's `launch.desktop` in both Applications folders,
+/// this account's first. The ID is the entry's `X-Elavo-Id`, the desktop ID
+/// its application has everywhere else, so a pin made from an entry and one
+/// made from the application are the same pin.
+fn bundle_entries() -> Vec<AppEntry> {
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    for folder in [home_applications_dir(), shared_applications_dir()] {
+        let Ok(read) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        let mut dirs: Vec<PathBuf> = read
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "eapp"))
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let launch = dir.join("launch.desktop");
+            let Some(info) = DesktopAppInfo::from_filename(&launch) else {
+                continue;
+            };
+            let id = match info.string("X-Elavo-Id") {
+                Some(id) => format!("{id}.desktop"),
+                None => match dir.file_stem() {
+                    Some(stem) => format!("{}.desktop", stem.to_string_lossy()),
+                    None => continue,
+                },
+            };
+            if seen.insert(id.clone()) {
+                entries.extend(entry(id, &launch));
+            }
+        }
+    }
+    entries
+}
+
 /// None for `Hidden=true` and for files that are not applications.
 fn entry(id: String, path: &Path) -> Option<AppEntry> {
     let info = DesktopAppInfo::from_filename(path)?;
@@ -123,31 +173,22 @@ impl AppIndex {
                 entries.extend(entry(id, &path));
             }
         }
+        // An entry in an Applications folder carries the icon picked for it
+        // there, so its launch.desktop stands in for the application's own.
+        for bundle in bundle_entries() {
+            match entries.iter_mut().find(|e| e.id == bundle.id) {
+                Some(existing) => *existing = bundle,
+                None => entries.push(bundle),
+            }
+        }
         entries.sort_by_key(|e| e.name.to_lowercase());
         Self { entries }
     }
 
     /// The installs in the Applications folders: each `*.eapp` directory's
-    /// `launch.desktop`. Only this account's folder for now; the shared
-    /// folder joins once its path is decided.
+    /// `launch.desktop`, in this account's folder and the shared one.
     pub fn load_applications_folders() -> Self {
-        let mut entries = Vec::new();
-        let Ok(read) = std::fs::read_dir(home_applications_dir()) else {
-            return Self { entries };
-        };
-        let mut dirs: Vec<PathBuf> = read
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "eapp"))
-            .collect();
-        dirs.sort();
-        for dir in dirs {
-            let Some(stem) = dir.file_stem() else {
-                continue;
-            };
-            let id = format!("{}.desktop", stem.to_string_lossy());
-            entries.extend(entry(id, &dir.join("launch.desktop")));
-        }
+        let mut entries = bundle_entries();
         entries.sort_by_key(|e| e.name.to_lowercase());
         Self { entries }
     }

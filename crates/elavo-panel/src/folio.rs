@@ -941,9 +941,15 @@ fn mnemonic(label: &str) -> String {
     label.replace('_', "__")
 }
 
+/// The shared Applications folder, or this account's own on a system that
+/// does not have the shared one.
 fn applications_dir() -> Option<std::path::PathBuf> {
-    let path = glib::home_dir().join("Applications");
-    path.is_dir().then_some(path)
+    [
+        elavo_common::apps::shared_applications_dir(),
+        elavo_common::apps::home_applications_dir(),
+    ]
+    .into_iter()
+    .find(|p| p.is_dir())
 }
 
 fn home_uri() -> Option<String> {

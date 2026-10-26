@@ -476,8 +476,11 @@ impl Desktop {
             .add_mime_type(ICON_MIME)
             .add_type(gdk::FileList::static_type())
             .build();
-        let drop =
-            gtk::DropTargetAsync::new(Some(formats), gdk::DragAction::COPY | gdk::DragAction::MOVE);
+        // Files offers an Applications entry only as a link.
+        let drop = gtk::DropTargetAsync::new(
+            Some(formats),
+            gdk::DragAction::COPY | gdk::DragAction::MOVE | gdk::DragAction::LINK,
+        );
         let desktop = Rc::clone(self);
         drop.connect_drag_enter(move |_, drop, x, y| {
             desktop.on_drag_motion(drop, x, y, icon_monitor)
@@ -1927,8 +1930,10 @@ impl Desktop {
             }
         } else if drop.actions().contains(gdk::DragAction::MOVE) {
             gdk::DragAction::MOVE
-        } else {
+        } else if drop.actions().contains(gdk::DragAction::COPY) {
             gdk::DragAction::COPY
+        } else {
+            drop.actions() & gdk::DragAction::LINK
         }
     }
 
@@ -2004,6 +2009,21 @@ impl Desktop {
         } else {
             self.desktop_dir.clone()
         };
+        // An Applications entry is the install itself. It stays where it is,
+        // and the desktop gets a shortcut that opens it.
+        let (entries, files): (Vec<gio::File>, Vec<gio::File>) =
+            files.into_iter().partition(is_applications_entry);
+        let linked = !entries.is_empty();
+        for entry in entries {
+            make_shortcut(&entry, &dest);
+        }
+        if files.is_empty() || !offered.intersects(gdk::DragAction::MOVE | gdk::DragAction::COPY) {
+            return if linked {
+                gdk::DragAction::LINK & offered
+            } else {
+                gdk::DragAction::empty()
+            };
+        }
         let disk = filesystem_id(&gio::File::for_path(&dest));
         let cut = offered.contains(gdk::DragAction::MOVE)
             && disk.is_some()
@@ -2154,6 +2174,33 @@ impl Desktop {
         ) {
             glib::g_warning!("elavo-desktop", "changed: {err}");
         }
+    }
+}
+
+/// An `.eapp` entry from an Applications folder (elavo-applications).
+fn is_applications_entry(file: &gio::File) -> bool {
+    file.path().is_some_and(|path| {
+        path.extension().is_some_and(|e| e == "eapp") && path.join("entry.json").is_file()
+    })
+}
+
+/// A shortcut to `entry` in `dir`, written by `elavo-applications-ctl`.
+fn make_shortcut(entry: &gio::File, dir: &Path) {
+    let Some(path) = entry.path() else {
+        return;
+    };
+    let argv = [
+        std::ffi::OsStr::new("elavo-applications-ctl"),
+        std::ffi::OsStr::new("shortcut"),
+        path.as_os_str(),
+        dir.as_os_str(),
+    ];
+    if let Err(err) = gio::Subprocess::newv(&argv, gio::SubprocessFlags::NONE) {
+        glib::g_warning!(
+            "elavo-desktop",
+            "making a shortcut to {}: {err}",
+            path.display()
+        );
     }
 }
 

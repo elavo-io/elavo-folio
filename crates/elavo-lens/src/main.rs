@@ -4,8 +4,8 @@
 
 mod calc;
 
-use std::cell::{OnceCell, RefCell};
-use std::rc::Rc;
+use std::cell::{Cell, OnceCell, RefCell};
+use std::rc::{Rc, Weak};
 
 use elavo_common::{AppEntry, AppIndex};
 use gtk::prelude::*;
@@ -26,9 +26,9 @@ enum Action {
 }
 
 /// What System Settings' Lens pane chose in `elavo/lens.conf`: the
-/// Applications folders (the default) or every installed app. Until this
-/// account has an Applications folder, every installed app, so Lens is
-/// never empty.
+/// Applications folders (the default) or every installed app. The shared
+/// folder holds the system's applications, so without it Lens lists every
+/// installed app rather than only this account's own entries.
 fn load_applications() -> AppIndex {
     let file = glib::KeyFile::new();
     let path = glib::user_config_dir().join("elavo/lens.conf");
@@ -37,7 +37,7 @@ fn load_applications() -> AppIndex {
         .ok()
         .and_then(|()| file.string("Lens", "Applications").ok())
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("all"));
-    if all || !elavo_common::apps::home_applications_dir().is_dir() {
+    if all || !elavo_common::apps::shared_applications_dir().is_dir() {
         AppIndex::load()
     } else {
         AppIndex::load_applications_folders()
@@ -63,6 +63,9 @@ struct Lens {
     apps: RefCell<Vec<AppEntry>>,
     /// Action for each list row, by row index. Headings have none.
     actions: RefCell<Vec<Option<Action>>>,
+    /// An application is being dragged out, to the Dock.
+    dragging: Cell<bool>,
+    me: Weak<Lens>,
 }
 
 impl Lens {
@@ -162,7 +165,8 @@ impl Lens {
         root.append(&column);
         window.set_child(Some(&root));
 
-        let lens = Rc::new(Self {
+        let lens = Rc::new_cyclic(|me| Self {
+            me: me.clone(),
             window,
             column,
             bar,
@@ -177,6 +181,7 @@ impl Lens {
             grid_scroller,
             apps: RefCell::default(),
             actions: RefCell::default(),
+            dragging: Cell::new(false),
         });
         lens.connect(&root);
         lens.sync_blur();
@@ -187,7 +192,12 @@ impl Lens {
     /// layer around them stays clear. The panel does not use this.
     fn sync_blur(&self) {
         let mut parts = Vec::new();
-        if let Some(bounds) = self.bar.compute_bounds(&self.window) {
+        let bar = if self.dragging.get() {
+            None
+        } else {
+            self.bar.compute_bounds(&self.window)
+        };
+        if let Some(bounds) = bar {
             parts.push((
                 bounds.x().round() as i32,
                 bounds.y().round() as i32,
@@ -196,7 +206,7 @@ impl Lens {
                 27,
             ));
         }
-        if self.results.is_visible() {
+        if self.results.is_visible() && !self.dragging.get() {
             if let Some(bounds) = self.results.compute_bounds(&self.window) {
                 parts.push((
                     bounds.x().round() as i32,
@@ -385,6 +395,7 @@ impl Lens {
                 .tooltip_text(app.name.as_str())
                 .build();
             tile.append(&app_image(app, GRID_ICON));
+            tile.add_controller(self.drag_source(app));
             tile.append(
                 &gtk::Label::builder()
                     .label(app.name.as_str())
@@ -445,6 +456,86 @@ impl Lens {
             app.generic_name.as_deref(),
             Action::Launch(app.clone()),
         );
+        if let Some(row) = self.list.last_child() {
+            row.add_controller(self.drag_source(app));
+        }
+    }
+
+    /// Dragging an application out of Lens offers its Applications entry,
+    /// or its desktop file, as a link; the Dock pins it.
+    fn drag_source(&self, app: &AppEntry) -> gtk::DragSource {
+        let source = gtk::DragSource::builder()
+            .actions(gdk::DragAction::LINK | gdk::DragAction::COPY)
+            .build();
+        let file = app.info.filename().map(|path| {
+            match path
+                .parent()
+                .filter(|p| p.extension().is_some_and(|e| e == "eapp"))
+            {
+                Some(bundle) => gio::File::for_path(bundle),
+                None => gio::File::for_path(&path),
+            }
+        });
+        let Some(file) = file else {
+            return source;
+        };
+        let list = gdk::FileList::from_array(&[file]);
+        source.set_content(Some(&gdk::ContentProvider::for_value(&list.to_value())));
+        let icon = app.icon();
+        let lens = self.me.clone();
+        source.connect_drag_begin(move |source, _| {
+            let Some(lens) = lens.upgrade() else {
+                return;
+            };
+            // The tile is about to be hidden, so the drag icon is drawn from
+            // the theme rather than from the widget.
+            if let Some(icon) = icon.as_ref() {
+                let theme = gtk::IconTheme::for_display(&WidgetExt::display(&lens.window));
+                let paintable = theme.lookup_by_gicon(
+                    icon,
+                    GRID_ICON,
+                    lens.window.scale_factor(),
+                    gtk::TextDirection::None,
+                    gtk::IconLookupFlags::empty(),
+                );
+                source.set_icon(Some(&paintable), GRID_ICON / 2, GRID_ICON / 2);
+            }
+            lens.step_aside();
+        });
+        let lens = self.me.clone();
+        source.connect_drag_end(move |_, _, _| {
+            if let Some(lens) = lens.upgrade() {
+                lens.hide();
+            }
+        });
+        source
+    }
+
+    /// Lens covers the screen above the Dock. While an application is
+    /// dragged out of it, Lens draws nothing, takes no input, and sits below
+    /// the Dock's layer, so the drop reaches the Dock.
+    fn step_aside(&self) {
+        self.dragging.set(true);
+        self.column.set_opacity(0.0);
+        self.sync_blur();
+        if let Some(surface) = self.window.surface() {
+            surface.set_input_region(Some(&gtk::cairo::Region::create()));
+        }
+        self.window.set_keyboard_mode(KeyboardMode::None);
+        self.window.set_layer(Layer::Bottom);
+    }
+
+    /// Undoes [`Lens::step_aside`] while Lens is hidden.
+    fn come_back(&self) {
+        if !self.dragging.replace(false) {
+            return;
+        }
+        self.column.set_opacity(1.0);
+        if let Some(surface) = self.window.surface() {
+            surface.set_input_region(None);
+        }
+        self.window.set_layer(Layer::Overlay);
+        self.window.set_keyboard_mode(KeyboardMode::Exclusive);
     }
 
     fn refresh(&self) {
@@ -596,6 +687,7 @@ impl Lens {
 
     fn hide(&self) {
         self.window.set_visible(false);
+        self.come_back();
     }
 
     fn toggle(&self, applications: bool) {
