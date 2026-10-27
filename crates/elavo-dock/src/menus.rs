@@ -8,7 +8,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 use crate::others::{Display, Sort, View};
-use crate::{files, trash, Dock, DockView, ABOUT_KEY, TRASH_KEY};
+use crate::{files, pins, trash, Dock, DockView, ABOUT_KEY, TRASH_KEY};
 
 /// Builds a menu and the actions behind it under the `dock.` prefix.
 struct Menu {
@@ -311,13 +311,15 @@ fn app(
     menu.separator();
     if let (Some(entry), Some(id)) = (entry.as_ref(), item.desktop_id.clone()) {
         let options = gio::Menu::new();
-        let weak = Rc::downgrade(dock);
-        let pin_id = id.clone();
-        menu.check(&options, "Keep in Dock", item.pinned, move |on| {
-            if let Some(dock) = weak.upgrade() {
-                dock.set_pinned(&pin_id, on);
-            }
-        });
+        if id != pins::FILES {
+            let weak = Rc::downgrade(dock);
+            let pin_id = id.clone();
+            menu.check(&options, "Keep in Dock", item.pinned, move |on| {
+                if let Some(dock) = weak.upgrade() {
+                    dock.set_pinned(&pin_id, on);
+                }
+            });
+        }
         if item.recent && !item.running() {
             let weak = Rc::downgrade(dock);
             let recent_id = id.clone();

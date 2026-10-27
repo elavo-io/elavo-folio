@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "elavo-dock"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "elavo-common",
  "elavo-dock-settings",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "elavo-lens"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "elavo-common",
  "gtk4",

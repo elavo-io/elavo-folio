@@ -504,7 +504,10 @@ impl Dock {
             } else {
                 Bounce::None
             },
-            draggable: item.desktop_id.is_some(),
+            draggable: item
+                .desktop_id
+                .as_deref()
+                .is_some_and(|id| id != pins::FILES),
         }
     }
 
@@ -652,7 +655,7 @@ impl Dock {
         let Some(entry) = self.entry(item) else {
             return;
         };
-        if action.is_none() && !item.running() {
+        if action.is_none() && !item.running() && pins::waits_for_a_window(&entry.id) {
             if self.launching.borrow().contains_key(&entry.id) {
                 return;
             }
@@ -689,12 +692,7 @@ impl Dock {
     pub fn set_pinned(self: &Rc<Self>, id: &str, pinned: bool) {
         {
             let mut pins = self.pins.borrow_mut();
-            let present = pins.iter().any(|p| p == id);
-            if pinned && !present {
-                pins.push(id.to_owned());
-            } else if !pinned && present {
-                pins.retain(|p| p != id);
-            } else {
+            if !pins::set_pin(&mut pins, id, pinned) {
                 return;
             }
             pins::save(&pins);
@@ -724,11 +722,15 @@ impl Dock {
                 .filter_map(|i| i.desktop_id.clone())
                 .filter(|id| Some(id.as_str()) != exclude)
                 .collect();
-            let mut to = model::pin_index(&pins, &visible, slot);
+            let mut to = pins::after_files(model::pin_index(&pins, &visible, slot));
             for id in ids {
+                if id == pins::FILES {
+                    continue;
+                }
                 model::place_pin(&mut pins, id, to);
                 to = pins.iter().position(|p| p == id).map_or(to, |at| at + 1);
             }
+            pins::lock_files(&mut pins);
             pins::save(&pins);
         }
         self.refresh();
@@ -906,7 +908,7 @@ impl Host for HostRef {
             let Some(id) = item.desktop_id.as_deref() else {
                 return;
             };
-            if item.pinned {
+            if item.pinned && id != pins::FILES {
                 dock.set_pinned(id, false);
             } else if item.recent && !item.running() {
                 dock.forget_recent(id);

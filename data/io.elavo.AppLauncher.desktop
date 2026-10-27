@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=App Launcher
+Comment=All applications
+Exec=elavo-lens --applications
+Icon=io.elavo.AppLauncher
+Terminal=false
+Categories=System;Utility;
+StartupNotify=false
+StartupWMClass=io.elavo.Lens

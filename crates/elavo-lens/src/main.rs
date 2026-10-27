@@ -727,7 +727,11 @@ fn main() -> glib::ExitCode {
         if has("--toggle") {
             lens.toggle(false);
         } else if has("--applications") {
-            lens.toggle(true);
+            if lens.window.is_visible() {
+                lens.hide();
+            } else {
+                lens.show(true);
+            }
         }
         glib::ExitCode::SUCCESS
     });

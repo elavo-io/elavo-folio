@@ -8,6 +8,9 @@ prefix="${PREFIX:-/usr}"
 sysconfdir="${SYSCONFDIR:-/etc}"
 dest="${DESTDIR:-}"
 
+install -Dm644 data/io.elavo.AppLauncher.desktop \
+    "${dest}${prefix}/share/applications/io.elavo.AppLauncher.desktop"
+
 for bin in elavo-panel elavo-dock elavo-lens elavo-switcher elavo-input elavo-desktop; do
     install -Dm755 "target/release/${bin}" "${dest}${prefix}/bin/${bin}"
     install -Dm644 "data/systemd/user/${bin}.service" \
