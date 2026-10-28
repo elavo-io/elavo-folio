@@ -111,7 +111,17 @@ pub fn move_into(files: Vec<gio::File>, folder: gio::File) {
 }
 
 pub fn trash(files: Vec<gio::File>) {
-    let uris: Vec<String> = files.iter().map(|f| f.uri().to_string()).collect();
+    let mut uris = Vec::new();
+    for file in files {
+        if let Some(path) = file.path().filter(|p| is_shared_bundle(p)) {
+            confirm_remove(&path);
+            continue;
+        }
+        uris.push(file.uri().to_string());
+    }
+    if uris.is_empty() {
+        return;
+    }
     std::thread::spawn(move || {
         for uri in uris {
             if let Err(err) = gio::File::for_uri(&uri).trash(gio::Cancellable::NONE) {
@@ -119,6 +129,50 @@ pub fn trash(files: Vec<gio::File>) {
             }
         }
     });
+}
+
+/// `/Applications` lives on `/var`, and GIO will not trash that mount. The
+/// Applications service asks Uninstall or Keep and leaves the directory in
+/// place until Uninstall.
+fn is_shared_bundle(path: &std::path::Path) -> bool {
+    if !path.extension().is_some_and(|ext| ext == "eapp") {
+        return false;
+    }
+    let Some(parent) = path.parent().and_then(|p| std::fs::canonicalize(p).ok()) else {
+        return false;
+    };
+    std::fs::canonicalize("/Applications")
+        .ok()
+        .is_some_and(|shared| parent == shared)
+}
+
+fn confirm_remove(path: &std::path::Path) {
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        return;
+    };
+    let path = path.to_string_lossy().into_owned();
+    let params = (
+        "confirm-remove",
+        vec![glib::Variant::from(path.as_str()).to_variant()],
+        std::collections::HashMap::<String, glib::Variant>::new(),
+    )
+        .to_variant();
+    bus.call(
+        Some("io.elavo.Applications"),
+        "/io/elavo/Applications",
+        "org.freedesktop.Application",
+        "ActivateAction",
+        Some(&params),
+        None,
+        gio::DBusCallFlags::NONE,
+        2000,
+        gio::Cancellable::NONE,
+        |result| {
+            if let Err(err) = result {
+                glib::g_warning!("elavo-dock", "asking to remove an application: {err}");
+            }
+        },
+    );
 }
 
 /// Asks the Applications service (elavo-applications) to say that `name`
