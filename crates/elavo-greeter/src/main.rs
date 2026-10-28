@@ -12,6 +12,7 @@
 mod accounts;
 mod avatar;
 mod config;
+mod frost;
 mod glass;
 mod greetd;
 mod logind;

@@ -24,7 +24,12 @@ use crate::wallpaper::{self, Picture};
 
 const BAR: i32 = 28;
 const AVATAR: i32 = 64;
-/// How tall the user list may grow before it scrolls.
+/// Room inside the list's scroller above and below the rows. The scroller
+/// clips to its own edges, and the pictures' and the field's shadows reach
+/// this far.
+const SHADOW_ROOM: i32 = 24;
+/// How tall the user list may grow before it scrolls, not counting
+/// [`SHADOW_ROOM`].
 const LIST_HEIGHT: i32 = 320;
 /// Every list row is this wide, so the photos share one left edge.
 const LIST_WIDTH: i32 = 300;
@@ -66,6 +71,8 @@ pub struct Screen {
     status: Rc<Status>,
     views: RefCell<Vec<View>>,
     pictures: RefCell<HashMap<PathBuf, Picture>>,
+    /// The picture on screen. Frosted plates read it when they draw.
+    wallpaper: Rc<RefCell<Option<gdk::Texture>>>,
     shown: RefCell<Option<PathBuf>>,
     aspect: Cell<f64>,
     h24: Cell<bool>,
@@ -126,13 +133,39 @@ fn password_entry() -> gtk::Entry {
     entry
 }
 
-fn avatar(account: &Account, size: i32) -> gtk::Widget {
-    if let Some(icon) = account.icon.as_ref() {
+/// The name and password fields. The plate is the blurred wallpaper; the
+/// entry draws the border, the text, and the arrow.
+fn field_plate(entry: &gtk::Entry, wallpaper: &Rc<RefCell<Option<gdk::Texture>>>) -> gtk::Widget {
+    let plate = crate::frost::Plate::new(wallpaper.clone());
+    plate.add_css_class("elavo-greeter-field-plate");
+    plate.set_child(entry);
+    plate.upcast()
+}
+
+fn avatar(
+    account: &Account,
+    size: i32,
+    wallpaper: &Rc<RefCell<Option<gdk::Texture>>>,
+) -> gtk::Widget {
+    let inner = if let Some(icon) = account.icon.as_ref() {
         if let Some(image) = crate::avatar::image(icon, size) {
             image.add_css_class("elavo-greeter-avatar");
-            return image;
+            image
+        } else {
+            initial_avatar(account, size)
         }
-    }
+    } else {
+        initial_avatar(account, size)
+    };
+    // A rim of the blurred wallpaper shows around the picture.
+    let plate = crate::frost::Plate::new(wallpaper.clone());
+    plate.set_rim(crate::frost::PHOTO_RIM);
+    plate.add_css_class("elavo-greeter-photo");
+    plate.set_child(&inner);
+    plate.upcast()
+}
+
+fn initial_avatar(account: &Account, size: i32) -> gtk::Widget {
     let frame = gtk::Box::builder()
         .width_request(size)
         .height_request(size)
@@ -157,13 +190,17 @@ fn avatar(account: &Account, size: i32) -> gtk::Widget {
 
 /// The chosen person's picture when other accounts exist. Hovering it fades
 /// in the ring from the style sheet. Clicking it returns to the list.
-fn framed_avatar(account: &Account, size: i32) -> gtk::Widget {
+fn framed_avatar(
+    account: &Account,
+    size: i32,
+    wallpaper: &Rc<RefCell<Option<gdk::Texture>>>,
+) -> gtk::Widget {
     let ring = gtk::Box::builder()
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
         .css_classes(["elavo-greeter-avatar-ring"])
         .build();
-    ring.append(&avatar(account, size));
+    ring.append(&avatar(account, size, wallpaper));
     ring.upcast()
 }
 
@@ -219,6 +256,7 @@ impl Screen {
         };
         let show = if kind == Kind::Lock { Show::List } else { show };
         let settings = interface_settings();
+        let wallpaper = Rc::new(RefCell::new(None));
 
         let message = gtk::Label::builder()
             .visible(false)
@@ -252,9 +290,9 @@ impl Screen {
             .build();
         password_block.append(&fingerprint);
         if show == Show::Name {
-            password_block.append(&name);
+            password_block.append(&field_plate(&name, &wallpaper));
         }
-        password_block.append(&password);
+        password_block.append(&field_plate(&password, &wallpaper));
         password_block.append(&message);
 
         let people = gtk::Box::builder()
@@ -264,6 +302,8 @@ impl Screen {
             .halign(gtk::Align::Center)
             .margin_start(24)
             .margin_end(24)
+            .margin_top(SHADOW_ROOM)
+            .margin_bottom(SHADOW_ROOM)
             .build();
         // A long list scrolls instead of growing the window. The password
         // stays out of the list until someone is chosen.
@@ -272,7 +312,7 @@ impl Screen {
             .vscrollbar_policy(gtk::PolicyType::External)
             .propagate_natural_width(true)
             .propagate_natural_height(true)
-            .max_content_height(LIST_HEIGHT)
+            .max_content_height(LIST_HEIGHT + SHADOW_ROOM * 2)
             .halign(gtk::Align::Center)
             .child(&people)
             .build();
@@ -329,6 +369,7 @@ impl Screen {
             status: Status::new(kind == Kind::Lock),
             views: RefCell::default(),
             pictures: RefCell::default(),
+            wallpaper,
             shown: RefCell::default(),
             aspect: Cell::new(16.0 / 10.0),
             h24: Cell::new(uses_24h(settings.as_ref())),
@@ -559,15 +600,31 @@ impl Screen {
                 }
             });
         }
+        let base = if self.kind == Kind::Login { 32 } else { 72 };
+        // The list's scroller already ends with SHADOW_ROOM of empty space.
+        let room = if self.show == Show::Name {
+            0
+        } else {
+            SHADOW_ROOM
+        };
         let bottom = gtk::Box::builder()
-            .height_request(if self.kind == Kind::Login { 32 } else { 72 })
+            .height_request((base - room).max(0))
             .build();
         column.append(&bottom);
+
+        let shade = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        shade.set_can_target(false);
+        shade.set_hexpand(true);
+        shade.set_vexpand(true);
+        shade.set_halign(gtk::Align::Fill);
+        shade.set_valign(gtk::Align::Fill);
+        shade.add_css_class("elavo-greeter-shade");
 
         let root = gtk::Overlay::builder()
             .css_classes(["elavo-greeter"])
             .child(&picture)
             .build();
+        root.add_overlay(&shade);
         root.add_overlay(&column);
 
         self.views.borrow_mut().push(View {
@@ -647,9 +704,13 @@ impl Screen {
     }
 
     fn apply(&self, picture: &Picture) {
+        *self.wallpaper.borrow_mut() = Some(picture.texture.clone());
         for view in self.views.borrow().iter() {
             view.picture.set_paintable(Some(&picture.texture));
             view.clock.set_texture(Some(&picture.texture));
+            if let Some(root) = view.picture.root() {
+                root.queue_draw();
+            }
             for ink in [wallpaper::Ink::White, wallpaper::Ink::Black] {
                 view.bar.remove_css_class(ink.css_class());
             }
@@ -699,9 +760,9 @@ impl Screen {
             .css_classes(["elavo-greeter-name"])
             .build();
         let picture = if back && self.accounts.len() > 1 {
-            framed_avatar(account, AVATAR)
+            framed_avatar(account, AVATAR, &self.wallpaper)
         } else {
-            avatar(account, AVATAR)
+            avatar(account, AVATAR, &self.wallpaper)
         };
         let body = if back {
             name.set_justify(gtk::Justification::Center);
@@ -732,8 +793,23 @@ impl Screen {
         if back && self.accounts.len() < 2 {
             return body;
         }
+        // A list row fades in a blurred plate behind the picture and the name.
+        // The chosen person keeps the white ring on the picture instead.
+        let mut hover = None;
+        let child = if back {
+            body
+        } else {
+            body.add_css_class("elavo-greeter-person-row");
+            let plate = crate::frost::Plate::new(self.wallpaper.clone());
+            plate.add_css_class("elavo-greeter-hover");
+            plate.fade();
+            plate.set_hexpand(true);
+            plate.set_child(&body);
+            hover = Some(plate.clone());
+            plate.upcast()
+        };
         let button = gtk::Button::builder()
-            .child(&body)
+            .child(&child)
             .halign(if back {
                 gtk::Align::Center
             } else {
@@ -745,6 +821,13 @@ impl Screen {
             .build();
         if back {
             button.add_css_class("elavo-greeter-chosen");
+        }
+        if let Some(plate) = hover {
+            let motion = gtk::EventControllerMotion::new();
+            let entered = plate.clone();
+            motion.connect_enter(move |_, _, _| entered.set_hovered(true));
+            motion.connect_leave(move |_| plate.set_hovered(false));
+            button.add_controller(motion);
         }
         let weak = Rc::downgrade(self);
         button.connect_clicked(move |_| {
@@ -889,10 +972,13 @@ impl Screen {
                     self.message.set_label(&text);
                     self.message.set_visible(true);
                 }
-                self.password.add_css_class("shake");
-                let entry = self.password.clone();
+                let field = self
+                    .password
+                    .parent()
+                    .unwrap_or_else(|| self.password.clone().upcast());
+                field.add_css_class("shake");
                 glib::timeout_add_local_once(Duration::from_millis(450), move || {
-                    entry.remove_css_class("shake");
+                    field.remove_css_class("shake");
                 });
             }
         }

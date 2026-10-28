@@ -73,7 +73,7 @@ mod imp {
             snapshot.pop();
 
             if let Some(texture) = self.texture.borrow().as_ref() {
-                if let Some(cover) = cover_rect(&widget, texture) {
+                if let Some(cover) = crate::frost::widget_wallpaper(widget.upcast_ref(), texture) {
                     let reach = BLUR * 2.0;
                     snapshot.push_blur(f64::from(BLUR));
                     snapshot.push_clip(&graphene::Rect::new(
@@ -127,22 +127,4 @@ impl Default for GlassClock {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Where the wallpaper sits, scaled to cover the window, in this widget's
-/// coordinates.
-fn cover_rect(widget: &GlassClock, texture: &gdk::Texture) -> Option<graphene::Rect> {
-    let root = widget.root()?;
-    let root = root.upcast_ref::<gtk::Widget>();
-    let offset = widget.compute_point(root, &graphene::Point::zero())?;
-    let (rw, rh) = (root.width() as f32, root.height() as f32);
-    let (tw, th) = (texture.width() as f32, texture.height() as f32);
-    let scale = (rw / tw).max(rh / th);
-    let (cw, ch) = (tw * scale, th * scale);
-    Some(graphene::Rect::new(
-        (rw - cw) / 2.0 - offset.x(),
-        (rh - ch) / 2.0 - offset.y(),
-        cw,
-        ch,
-    ))
 }

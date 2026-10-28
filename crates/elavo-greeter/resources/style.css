@@ -6,6 +6,11 @@ window.elavo-greeter-window {
   color: #ffffff;
 }
 
+/* 10% black over the wallpaper, under the clock and the account. */
+.elavo-greeter-shade {
+  background-color: alpha(#000000, 0.1);
+}
+
 .elavo-greeter {
   font-family: "Inter", sans-serif;
 }
@@ -95,10 +100,16 @@ window.elavo-greeter-window {
   margin-top: -8px;
 }
 
+/* The blurred wallpaper is drawn by the plate. This is only its shadow. */
+.elavo-greeter-photo {
+  border-radius: 9999px;
+  box-shadow: 0 4px 16px alpha(#000000, 0.25);
+}
+
 .elavo-greeter-avatar {
   border-radius: 9999px;
-  background-color: alpha(#ffffff, 0.22);
-  box-shadow: 0 4px 16px alpha(#000000, 0.25);
+  background: none;
+  box-shadow: none;
 }
 
 /* Around the chosen picture, and only when another account exists, so the
@@ -130,7 +141,7 @@ window.elavo-greeter-window {
 }
 
 .elavo-greeter-person {
-  padding: 4px 16px 4px 4px;
+  padding: 0;
   border: none;
   border-radius: 9999px;
   background: none;
@@ -138,12 +149,23 @@ window.elavo-greeter-window {
   color: inherit;
 }
 
+.elavo-greeter-person-row {
+  padding: 4px 16px 4px 4px;
+}
+
 .elavo-greeter-chosen {
   padding: 6px 12px;
 }
 
-.elavo-greeter-person:hover {
-  background-color: alpha(#ffffff, 0.16);
+.elavo-greeter-person:hover,
+.elavo-greeter-person:active {
+  background: none;
+}
+
+/* The list row's hover plate. Its glass fades in frost.rs; the picture
+   and the name are the plate's child and stay opaque. */
+.elavo-greeter-hover {
+  border-radius: 9999px;
 }
 
 .elavo-greeter-person.elavo-greeter-chosen,
@@ -159,7 +181,7 @@ entry.elavo-greeter-field {
   padding: 0 6px 0 14px;
   border: 1px solid alpha(#ffffff, 0.28);
   border-radius: 9999px;
-  background-color: alpha(#ffffff, 0.2);
+  background-color: transparent;
   box-shadow: 0 2px 10px alpha(#000000, 0.12);
   color: #ffffff;
   caret-color: #ffffff;
@@ -168,7 +190,7 @@ entry.elavo-greeter-field {
 }
 
 entry.elavo-greeter-field:focus-within {
-  background-color: alpha(#ffffff, 0.26);
+  background-color: transparent;
   border-color: alpha(#ffffff, 0.45);
 }
 
@@ -200,7 +222,7 @@ entry.elavo-greeter-field:disabled {
   100% { margin-left: 0; margin-right: 0; }
 }
 
-entry.elavo-greeter-field.shake {
+.elavo-greeter-field-plate.shake {
   animation: elavo-greeter-shake 420ms ease-out;
 }
 
