@@ -38,16 +38,74 @@ window.elavo-panel {
   transition: background-image 200ms ease-out;
 }
 
-/* Menus open from the bar but are not over the wallpaper, so they keep the
-   theme's colors instead of the bar's white or black. The weight stays the
-   theme's too, rather than the heavier titles on the bar. */
-.elavo-panel-bar popover,
-.elavo-panel-bar popover contents,
-.elavo-panel-menu-popover {
-  color: @theme_fg_color;
+/* Menus do not take the bar's ink. That ink follows the wallpaper on each
+   screen, so a dark picture would put white type on a light menu. The fill
+   is the window color, and the type is the ink that reads on it.
+   `elavo-menu-dark` follows the color scheme. When the compositor offers
+   blur, the panel window is `elavo-menu-blur` and menus take
+   $elavo-panel-menu-bg, the window color at 62%, the same mix as the dock.
+   Unblurred, translucency would leave the type on a busy wallpaper, so the
+   fill stays opaque. The popover itself stays clear so the blur behind the
+   fill can show through. */
+.elavo-panel-bar popover.background,
+popover.elavo-panel-dropdown {
+  background-color: transparent;
+  color: #1e1e1e;
   text-shadow: none;
   -gtk-icon-shadow: none;
   font-weight: normal;
+}
+
+.elavo-panel-bar popover.background > contents,
+popover.elavo-panel-dropdown > contents {
+  background-color: #f5f5f5;
+  color: #1e1e1e;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+}
+
+.elavo-panel-bar popover modelbutton,
+.elavo-panel-bar popover label,
+.elavo-panel-bar popover button {
+  background-color: transparent;
+  color: inherit;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+}
+
+/* `color: inherit` above also undoes the theme's dimming of items that
+   cannot be chosen. */
+.elavo-panel-bar popover modelbutton:disabled {
+  opacity: 0.45;
+}
+
+/* A menu opened with the pointer gives its first item keyboard focus,
+   which GTK marks :selected. Only a keyboard user should see that. */
+.elavo-panel-bar popover.menu modelbutton:hover,
+.elavo-panel-bar popover.menu modelbutton:selected:focus-visible {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+}
+
+.elavo-panel-bar.elavo-menu-dark popover.background,
+.elavo-panel-bar.elavo-menu-dark popover.elavo-panel-dropdown {
+  color: #f5f5f5;
+}
+
+.elavo-panel-bar.elavo-menu-dark popover.background > contents,
+.elavo-panel-bar.elavo-menu-dark popover.elavo-panel-dropdown > contents {
+  background-color: #242424;
+  color: #f5f5f5;
+}
+
+.elavo-menu-blur .elavo-panel-bar popover.background > contents,
+.elavo-menu-blur .elavo-panel-bar popover.elavo-panel-dropdown > contents {
+  background-color: alpha(#f5f5f5, 0.62);
+}
+
+.elavo-menu-blur .elavo-panel-bar.elavo-menu-dark popover.background > contents,
+.elavo-menu-blur .elavo-panel-bar.elavo-menu-dark popover.elavo-panel-dropdown > contents {
+  background-color: alpha(#242424, 0.62);
 }
 
 /* Bar items fill the bar's full height, so a click above or below the pill

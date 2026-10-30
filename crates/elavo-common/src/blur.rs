@@ -3,6 +3,9 @@
 //! `elavo-common`'s foreign-toplevel connection is a different `wl_display`.
 //! A surface from GTK's connection cannot be named from that one, so this
 //! binds `ext_background_effect_v1` on the display GTK already uses.
+//!
+//! The registry roundtrip happens once per process. Doing it again from a
+//! menu's frame callback reenters GTK's display while the popup is mapping.
 
 use std::cell::RefCell;
 use std::os::raw::c_void;
@@ -21,18 +24,41 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
 
 struct BlurState;
 
-pub struct BackgroundBlur {
+struct WaylandBlur {
     conn: Connection,
     /// Kept so the proxies bound on this queue stay alive. GTK reads the
     /// shared display; events for this queue stay queued and are not required.
     #[allow(dead_code)]
-    queue: RefCell<wayland_client::EventQueue<BlurState>>,
+    queue: wayland_client::EventQueue<BlurState>,
+    qh: QueueHandle<BlurState>,
+    compositor: WlCompositor,
+    manager: ExtBackgroundEffectManagerV1,
+}
+
+thread_local! {
+    static WAYLAND: RefCell<Option<WaylandBlur>> = const { RefCell::new(None) };
+}
+
+pub struct BackgroundBlur {
+    conn: Connection,
     effect: ExtBackgroundEffectSurfaceV1,
     compositor: WlCompositor,
     qh: QueueHandle<BlurState>,
 }
 
 impl BackgroundBlur {
+    /// Read the blur global once, on the display `widget` is on. Menus can
+    /// then attach without a roundtrip inside their frame callback.
+    pub fn prepare_display(widget: &gtk::Widget) -> bool {
+        let Ok(display) = widget.display().downcast::<gdk4_wayland::WaylandDisplay>() else {
+            return false;
+        };
+        let Some(wl_display) = display.wl_display_raw() else {
+            return false;
+        };
+        ensure(wl_display.as_ptr().cast())
+    }
+
     /// Bind blur for the toplevel that owns `widget`. None when the
     /// compositor does not offer `ext_background_effect_v1`.
     pub fn for_widget(widget: &gtk::Widget) -> Option<Self> {
@@ -50,26 +76,26 @@ impl BackgroundBlur {
     /// `wl_display` and `wl_surface` are GTK's. Returns none when this
     /// compositor does not offer the protocol, or the pointers are null.
     pub fn attach(wl_display: *mut c_void, wl_surface: *mut c_void) -> Option<Self> {
-        if wl_display.is_null() || wl_surface.is_null() {
+        if wl_display.is_null() || wl_surface.is_null() || !ensure(wl_display) {
             return None;
         }
-        let backend = unsafe { Backend::from_foreign_display(wl_display.cast()) };
-        let conn = Connection::from_backend(backend);
-        let (globals, queue) = registry_queue_init::<BlurState>(&conn).ok()?;
-        let qh = queue.handle();
-        let manager: ExtBackgroundEffectManagerV1 = globals.bind(&qh, 1..=1, ()).ok()?;
         let surface_id =
             unsafe { ObjectId::from_ptr(WlSurface::interface(), wl_surface.cast()) }.ok()?;
-        let surface = WlSurface::from_id(&conn, surface_id).ok()?;
-        let effect = manager.get_background_effect(&surface, &qh, ());
-        let compositor: WlCompositor = globals.bind(&qh, 1..=6, ()).ok()?;
-        let _ = conn.flush();
-        Some(Self {
-            conn,
-            queue: RefCell::new(queue),
-            effect,
-            compositor,
-            qh,
+        WAYLAND.with(|slot| {
+            let slot = slot.borrow();
+            let wayland = slot.as_ref()?;
+            let surface = WlSurface::from_id(&wayland.conn, surface_id).ok()?;
+            let effect = wayland
+                .manager
+                .get_background_effect(&surface, &wayland.qh, ());
+            let blur = Self {
+                conn: wayland.conn.clone(),
+                effect,
+                compositor: wayland.compositor.clone(),
+                qh: wayland.qh.clone(),
+            };
+            let _ = blur.conn.flush();
+            Some(blur)
         })
     }
 
@@ -89,6 +115,55 @@ impl BackgroundBlur {
         region.destroy();
         let _ = self.conn.flush();
     }
+
+    /// Destroy the effect object now. A menu does this when it closes, so the
+    /// compositor drops the blur while the surface's scene node still exists,
+    /// and the surface can ask for a new one when it opens again.
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+impl Drop for BackgroundBlur {
+    /// Dropping a proxy does not send its destructor. Without this the
+    /// compositor keeps the effect, and the next `get_background_effect` on
+    /// the same surface is a protocol error that disconnects the client.
+    fn drop(&mut self) {
+        self.effect.destroy();
+        let _ = self.conn.flush();
+    }
+}
+
+fn ensure(wl_display: *mut c_void) -> bool {
+    if WAYLAND.with(|slot| slot.borrow().is_some()) {
+        return true;
+    }
+    let Some(wayland) = connect(wl_display) else {
+        return false;
+    };
+    WAYLAND.with(|slot| {
+        if slot.borrow().is_none() {
+            *slot.borrow_mut() = Some(wayland);
+        }
+    });
+    WAYLAND.with(|slot| slot.borrow().is_some())
+}
+
+fn connect(wl_display: *mut c_void) -> Option<WaylandBlur> {
+    let backend = unsafe { Backend::from_foreign_display(wl_display.cast()) };
+    let conn = Connection::from_backend(backend);
+    let (globals, queue) = registry_queue_init::<BlurState>(&conn).ok()?;
+    let qh = queue.handle();
+    let manager = globals.bind(&qh, 1..=1, ()).ok()?;
+    let compositor = globals.bind(&qh, 1..=6, ()).ok()?;
+    let _ = conn.flush();
+    Some(WaylandBlur {
+        conn,
+        queue,
+        qh,
+        compositor,
+        manager,
+    })
 }
 
 fn add_round_rect(region: &WlRegion, x: i32, y: i32, w: i32, h: i32, radius: i32) {

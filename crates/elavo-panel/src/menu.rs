@@ -103,6 +103,7 @@ pub fn button(window: &gtk::ApplicationWindow) -> gtk::MenuButton {
     if let Some(popover) = button.popover() {
         popover.set_has_arrow(false);
         popover.add_css_class("elavo-panel-menu-popover");
+        crate::dropdown::prepare(&popover, true);
         let window_ref = window.downgrade();
         popover.connect_show(move |_| {
             if let Some(window) = window_ref.upgrade() {

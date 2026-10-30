@@ -6,6 +6,7 @@ mod backdrop;
 mod clock;
 mod contrast;
 mod dbusmenu;
+mod dropdown;
 mod focus;
 mod folio;
 mod menu;
@@ -71,6 +72,7 @@ impl Panel {
             }
         });
         panel.rebuild();
+        watch_menu_scheme(&panel);
         panel
     }
 
@@ -97,6 +99,23 @@ impl Panel {
         self.windows.replace(windows);
         self.bars.replace(bars);
         self.refresh_backdrop();
+        self.apply_menu_scheme();
+    }
+
+    /// Menu fill and type follow the color scheme. The bar's own ink follows
+    /// the wallpaper, and must not be the menu's.
+    fn apply_menu_scheme(&self) {
+        let dark = menu_scheme_is_dark();
+        if let Some(settings) = gtk::Settings::default() {
+            settings.set_gtk_application_prefer_dark_theme(dark);
+        }
+        for bar in self.bars.borrow().iter() {
+            if dark {
+                bar.widget.add_css_class("elavo-menu-dark");
+            } else {
+                bar.widget.remove_css_class("elavo-menu-dark");
+            }
+        }
     }
 
     fn refresh_backdrop(&self) {
@@ -158,6 +177,15 @@ impl Panel {
         }
         window.auto_exclusive_zone_enable();
         window.set_keyboard_mode(KeyboardMode::None);
+        // Decided once, before any menu draws: with blur, every menu is
+        // translucent from its first frame; without it, every menu is opaque.
+        window.connect_realize(|window| {
+            if dropdown::menu_blur_enabled()
+                && elavo_common::blur::BackgroundBlur::prepare_display(window.upcast_ref())
+            {
+                window.add_css_class("elavo-menu-blur");
+            }
+        });
 
         let start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let sun = menu::button(&window);
@@ -178,6 +206,51 @@ impl Panel {
     }
 }
 
+/// `org.gnome.desktop.interface` `color-scheme`. Only `prefer-dark` is dark.
+fn scheme_is_dark(value: &str) -> bool {
+    value == "prefer-dark"
+}
+
+fn menu_scheme_is_dark() -> bool {
+    let Some(source) = gio::SettingsSchemaSource::default() else {
+        return false;
+    };
+    let Some(schema) = source.lookup("org.gnome.desktop.interface", true) else {
+        return false;
+    };
+    if !schema.has_key("color-scheme") {
+        return false;
+    }
+    scheme_is_dark(
+        gio::Settings::new("org.gnome.desktop.interface")
+            .string("color-scheme")
+            .as_str(),
+    )
+}
+
+fn watch_menu_scheme(panel: &Rc<Panel>) {
+    let Some(source) = gio::SettingsSchemaSource::default() else {
+        return;
+    };
+    let Some(schema) = source.lookup("org.gnome.desktop.interface", true) else {
+        return;
+    };
+    if !schema.has_key("color-scheme") {
+        return;
+    }
+    let desktop = gio::Settings::new("org.gnome.desktop.interface");
+    let weak = Rc::downgrade(panel);
+    desktop.connect_changed(Some("color-scheme"), move |_, _| {
+        if let Some(panel) = weak.upgrade() {
+            panel.apply_menu_scheme();
+        }
+    });
+    thread_local! {
+        static HELD: RefCell<Option<gio::Settings>> = const { RefCell::new(None) };
+    }
+    HELD.with(|slot| slot.replace(Some(desktop)));
+}
+
 fn main() -> glib::ExitCode {
     gio::resources_register_include!("elavo-panel.gresource").expect("panel resources");
 
@@ -196,4 +269,17 @@ fn main() -> glib::ExitCode {
         glib::ExitCode::SUCCESS
     });
     app.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scheme_is_dark;
+
+    #[test]
+    fn only_prefer_dark_is_a_dark_menu() {
+        assert!(scheme_is_dark("prefer-dark"));
+        assert!(!scheme_is_dark("prefer-light"));
+        assert!(!scheme_is_dark("default"));
+        assert!(!scheme_is_dark(""));
+    }
 }

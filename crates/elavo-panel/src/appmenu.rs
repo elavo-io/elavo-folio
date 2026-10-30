@@ -596,6 +596,7 @@ impl AppMenu {
             bar.insert_action_group("win", menus.win.as_ref());
         }
         region.append(&bar);
+        crate::dropdown::prepare_tree(bar.upcast_ref());
     }
 
     /// The application menu, then the application's own menus, then Window.
