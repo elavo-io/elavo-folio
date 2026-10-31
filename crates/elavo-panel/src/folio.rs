@@ -30,7 +30,7 @@ const DESKTOP_IFACE: &str = "io.elavo.Desktop";
 
 /// Nothing focused, Nautilus, or one of Folio's own windows (the panel's
 /// dialogs, the dock, the desktop). System Settings is its own application.
-const SYSTEM_SETTINGS: &str = "io.elavo.SystemSettings";
+pub(crate) const SYSTEM_SETTINGS: &str = "io.elavo.SystemSettings";
 
 pub fn is_folio(app_id: Option<&str>) -> bool {
     match app_id {

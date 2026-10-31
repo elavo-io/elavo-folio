@@ -607,7 +607,7 @@ impl AppMenu {
     fn model(&self, shown: &Shown) -> gio::Menu {
         let name = menu_label(&shown.name);
         let app = gio::Menu::new();
-        if shown.desktop_id.is_some() {
+        if shows_new_window(&shown.app_id, shown.desktop_id.is_some()) {
             app.append_section(None, &section(&[("New Window", "elavo.new-window")]));
         }
         app.append_section(
@@ -631,6 +631,12 @@ impl AppMenu {
         }
         bar
     }
+}
+
+/// New Window launches the application's desktop file again. System Settings
+/// keeps one window, so a second launch only raises it.
+fn shows_new_window(app_id: &str, has_desktop_file: bool) -> bool {
+    has_desktop_file && app_id != crate::folio::SYSTEM_SETTINGS
 }
 
 /// An application's exported menus fill in over D-Bus after the bar is
@@ -840,6 +846,13 @@ fn child_nodes(xml: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_settings_has_no_new_window() {
+        assert!(!shows_new_window(crate::folio::SYSTEM_SETTINGS, true));
+        assert!(shows_new_window("brave-browser", true));
+        assert!(!shows_new_window("brave-browser", false));
+    }
 
     #[test]
     fn object_path_follows_gtk() {
