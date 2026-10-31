@@ -101,6 +101,7 @@ pub fn prepare(popover: &gtk::Popover, from_bar: bool) {
         }
     });
     popover.connect_destroy(drop_blur);
+    crate::drag::track_menu(popover);
     walk(popover.upcast_ref(), false);
 }
 

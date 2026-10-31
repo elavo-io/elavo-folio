@@ -107,13 +107,17 @@ pub fn button(window: &gtk::ApplicationWindow) -> gtk::MenuButton {
         let window_ref = window.downgrade();
         popover.connect_show(move |_| {
             if let Some(window) = window_ref.upgrade() {
-                window.set_keyboard_mode(KeyboardMode::OnDemand);
+                if window.is_layer_window() {
+                    window.set_keyboard_mode(KeyboardMode::OnDemand);
+                }
             }
         });
         let window_ref = window.downgrade();
         popover.connect_closed(move |_| {
             if let Some(window) = window_ref.upgrade() {
-                window.set_keyboard_mode(KeyboardMode::None);
+                if window.is_layer_window() {
+                    window.set_keyboard_mode(KeyboardMode::None);
+                }
             }
         });
     }

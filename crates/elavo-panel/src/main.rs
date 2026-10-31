@@ -6,6 +6,7 @@ mod backdrop;
 mod clock;
 mod contrast;
 mod dbusmenu;
+mod drag;
 mod dropdown;
 mod focus;
 mod folio;
@@ -21,7 +22,15 @@ use gtk::{gdk, gio, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 const APP_ID: &str = "io.elavo.Panel";
+const PREVIEW_APP_ID: &str = "io.elavo.PanelPreview";
 const HEIGHT: i32 = 28;
+
+/// `--preview` draws the bar in an ordinary window instead of on the
+/// session's layer shell, so a build can be tried without replacing the
+/// running panel.
+fn preview_mode() -> bool {
+    std::env::args().any(|arg| arg == "--preview")
+}
 
 struct Panel {
     app: gtk::Application,
@@ -82,6 +91,21 @@ impl Panel {
         }
         let display = gdk::Display::default().expect("no display");
         let monitors = display.monitors();
+        if preview_mode() {
+            if let Some(monitor) = monitors.item(0).and_downcast::<gdk::Monitor>() {
+                let (window, widget) = self.bar(&monitor);
+                let shade = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                self.windows.replace(vec![window]);
+                self.bars.replace(vec![backdrop::Bar {
+                    widget,
+                    shade,
+                    monitor,
+                }]);
+            }
+            self.refresh_backdrop();
+            self.apply_menu_scheme();
+            return;
+        }
         let mut windows = Vec::new();
         let mut bars = Vec::new();
         for i in 0..monitors.n_items() {
@@ -161,22 +185,34 @@ impl Panel {
     }
 
     fn bar(&self, monitor: &gdk::Monitor) -> (gtk::ApplicationWindow, gtk::CenterBox) {
+        let preview = preview_mode();
         let window = gtk::ApplicationWindow::builder()
             .application(&self.app)
-            .title("Elavo Panel")
-            .decorated(false)
-            .default_height(HEIGHT)
-            .css_classes(["elavo-panel"])
+            .title(if preview {
+                "Panel preview"
+            } else {
+                "Elavo Panel"
+            })
+            .decorated(preview)
+            .default_width(if preview { 960 } else { -1 })
+            .default_height(if preview { 480 } else { HEIGHT })
+            .css_classes(if preview {
+                &[] as &[&str]
+            } else {
+                &["elavo-panel"]
+            })
             .build();
-        window.init_layer_shell();
-        window.set_namespace(Some("elavo-panel"));
-        window.set_layer(Layer::Top);
-        window.set_monitor(Some(monitor));
-        for edge in [Edge::Top, Edge::Left, Edge::Right] {
-            window.set_anchor(edge, true);
+        if !preview {
+            window.init_layer_shell();
+            window.set_namespace(Some("elavo-panel"));
+            window.set_layer(Layer::Top);
+            window.set_monitor(Some(monitor));
+            for edge in [Edge::Top, Edge::Left, Edge::Right] {
+                window.set_anchor(edge, true);
+            }
+            window.auto_exclusive_zone_enable();
+            window.set_keyboard_mode(KeyboardMode::None);
         }
-        window.auto_exclusive_zone_enable();
-        window.set_keyboard_mode(KeyboardMode::None);
         // Decided once, before any menu draws: with blur, every menu is
         // translucent from its first frame; without it, every menu is opaque.
         window.connect_realize(|window| {
@@ -200,7 +236,20 @@ impl Panel {
             .center_widget(&self.clock.label())
             .end_widget(&self.status.widget())
             .build();
-        window.set_child(Some(&bar));
+        if preview {
+            // The bar's default alignment would stretch it over the whole
+            // window. Keep it a strip at the top so menus open beneath it.
+            bar.set_valign(gtk::Align::Start);
+            bar.set_vexpand(false);
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            column.append(&bar);
+            let rest = gtk::Box::builder().vexpand(true).build();
+            column.append(&rest);
+            window.set_child(Some(&column));
+        } else {
+            window.set_child(Some(&bar));
+        }
+        drag::track_panel(window.upcast_ref());
         window.present();
         (window, bar)
     }
@@ -255,7 +304,11 @@ fn main() -> glib::ExitCode {
     gio::resources_register_include!("elavo-panel.gresource").expect("panel resources");
 
     let app = gtk::Application::builder()
-        .application_id(APP_ID)
+        .application_id(if preview_mode() {
+            PREVIEW_APP_ID
+        } else {
+            APP_ID
+        })
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
 

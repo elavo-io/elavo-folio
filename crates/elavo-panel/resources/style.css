@@ -82,6 +82,7 @@ popover.elavo-panel-dropdown > contents {
 /* A menu opened with the pointer gives its first item keyboard focus,
    which GTK marks :selected. Only a keyboard user should see that. */
 .elavo-panel-bar popover.menu modelbutton:hover,
+.elavo-panel-bar popover.menu modelbutton.elavo-drag-over,
 .elavo-panel-bar popover.menu modelbutton:selected:focus-visible {
   background-color: var(--accent-bg-color);
   color: var(--accent-fg-color);
