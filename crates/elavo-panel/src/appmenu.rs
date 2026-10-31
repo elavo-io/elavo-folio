@@ -597,6 +597,7 @@ impl AppMenu {
             prepare_as_menus_arrive(&bar, &menus.model);
         }
         region.append(&bar);
+        crate::dropdown::watch_menu_bar(&bar);
         crate::dropdown::prepare_tree(bar.upcast_ref());
     }
 
@@ -640,6 +641,11 @@ fn prepare_as_menus_arrive(bar: &gtk::PopoverMenuBar, model: &gio::MenuModel) {
     let handler = model.connect_items_changed(move |_, _, _, _| {
         let weak = weak.clone();
         // The bar adds its item for the change in its own handler.
+        if let Some(bar) = weak.upgrade() {
+            // Guard the new titles before the next pointer crossing. The
+            // idle below only styles menus that exist by then.
+            crate::dropdown::watch_menu_bar(&bar);
+        }
         glib::idle_add_local_once(move || {
             if let Some(bar) = weak.upgrade() {
                 crate::dropdown::prepare_tree(bar.upcast_ref());

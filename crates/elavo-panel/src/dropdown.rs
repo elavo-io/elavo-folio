@@ -11,6 +11,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use glib::translate::IntoGlib;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
@@ -261,6 +262,103 @@ fn widget_key(widget: &gtk::Widget) -> usize {
     widget.as_ptr() as usize
 }
 
+/// Where `GtkPopoverMenuBar.active_item` sits, when the bar is exactly the
+/// widget plus its three pointers (model, tracker, active item). Any other
+/// layout is left alone: guessing the offset would write into the bar.
+fn active_item_offset(widget_size: u32, bar_size: u32) -> Option<usize> {
+    let pointer = std::mem::size_of::<usize>() as u32;
+    if bar_size.checked_sub(widget_size) != Some(pointer.saturating_mul(3)) {
+        return None;
+    }
+    Some(widget_size as usize + 2 * pointer as usize)
+}
+
+fn menu_bar_active_offset() -> Option<usize> {
+    unsafe {
+        let mut widget = std::mem::zeroed();
+        let mut bar = std::mem::zeroed();
+        glib::gobject_ffi::g_type_query(gtk::Widget::static_type().into_glib(), &mut widget);
+        glib::gobject_ffi::g_type_query(gtk::PopoverMenuBar::static_type().into_glib(), &mut bar);
+        active_item_offset(widget.instance_size, bar.instance_size)
+    }
+}
+
+/// GTK's menu bar keeps the title it opened and never clears it when that
+/// title is destroyed before its menu has mapped. The next slide across the
+/// bar then reads the freed title: menus stop opening, and the panel crashes.
+/// Titles are guarded as they appear, and a destroyed open title asks the
+/// next title the pointer enters to open.
+pub fn watch_menu_bar(bar: &gtk::PopoverMenuBar) {
+    let Some(offset) = menu_bar_active_offset() else {
+        glib::g_warning!(
+            "elavo-panel",
+            "menu bar layout is not the one this panel knows; not guarding it"
+        );
+        return;
+    };
+    guard_bar_items(bar, offset);
+}
+
+fn guard_bar_items(bar: &gtk::PopoverMenuBar, offset: usize) {
+    let mut child = bar.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if unsafe { item.data::<bool>("elavo-menu-guard") }.is_some() {
+            continue;
+        }
+        unsafe { item.set_data("elavo-menu-guard", true) };
+        let bar_ref = bar.downgrade();
+        item.connect_destroy(move |item| clear_open_title(&bar_ref, item, offset));
+        let bar_ref = bar.downgrade();
+        let enter = gtk::EventControllerMotion::new();
+        enter.set_propagation_limit(gtk::PropagationLimit::None);
+        enter.connect_enter(move |controller, _, _| {
+            let Some(bar) = bar_ref.upgrade() else {
+                return;
+            };
+            let reopen = unsafe { bar.data::<bool>("elavo-menu-reopen") }
+                .is_some_and(|flag| unsafe { *flag.as_ref() });
+            if !reopen {
+                return;
+            }
+            unsafe { bar.set_data("elavo-menu-reopen", false) };
+            if let Some(item) = controller.widget() {
+                item.activate();
+            }
+        });
+        item.add_controller(enter);
+    }
+}
+
+/// `item` is still alive here. Drop the bar's pointer at `offset` when it is
+/// this title, and remember to open whichever title the pointer enters next.
+fn clear_open_title(bar: &glib::WeakRef<gtk::PopoverMenuBar>, item: &gtk::Widget, offset: usize) {
+    let Some(bar) = bar.upgrade() else {
+        return;
+    };
+    let mut open = false;
+    let mut child = item.first_child();
+    while let Some(widget) = child {
+        open = widget
+            .downcast_ref::<gtk::Popover>()
+            .is_some_and(|popover| popover.is_visible() || popover.is_mapped());
+        if open {
+            break;
+        }
+        child = widget.next_sibling();
+    }
+    unsafe {
+        let slot = bar.as_ptr().cast::<u8>().add(offset).cast::<*mut ()>();
+        if *slot != item.as_ptr().cast() {
+            return;
+        }
+        *slot = std::ptr::null_mut();
+    }
+    if open {
+        unsafe { bar.set_data("elavo-menu-reopen", true) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +381,17 @@ mod tests {
     #[test]
     fn only_moves_a_menu_that_is_clear_of_the_left_edge_down() {
         assert_eq!(menu_correction(80, 28, 0, 0, 28, (0, 0)), Some((0, 10)));
+    }
+
+    #[test]
+    fn the_open_title_is_the_bar_s_third_pointer() {
+        let pointer = std::mem::size_of::<usize>() as u32;
+        assert_eq!(
+            active_item_offset(100, 100 + pointer * 3),
+            Some(100 + 2 * pointer as usize)
+        );
+        assert_eq!(active_item_offset(100, 100 + pointer * 4), None);
+        assert_eq!(active_item_offset(200, 100), None);
     }
 
     #[test]
