@@ -594,6 +594,7 @@ impl AppMenu {
         if let Some(menus) = &shown.menus {
             bar.insert_action_group("app", Some(&menus.app));
             bar.insert_action_group("win", menus.win.as_ref());
+            prepare_as_menus_arrive(&bar, &menus.model);
         }
         region.append(&bar);
         crate::dropdown::prepare_tree(bar.upcast_ref());
@@ -629,6 +630,29 @@ impl AppMenu {
         }
         bar
     }
+}
+
+/// An application's exported menus fill in over D-Bus after the bar is
+/// built, and the bar makes a menu for each top item as it arrives. Those
+/// menus are styled, placed, and blurred like the rest once they exist.
+fn prepare_as_menus_arrive(bar: &gtk::PopoverMenuBar, model: &gio::MenuModel) {
+    let weak = bar.downgrade();
+    let handler = model.connect_items_changed(move |_, _, _, _| {
+        let weak = weak.clone();
+        // The bar adds its item for the change in its own handler.
+        glib::idle_add_local_once(move || {
+            if let Some(bar) = weak.upgrade() {
+                crate::dropdown::prepare_tree(bar.upcast_ref());
+            }
+        });
+    });
+    let model = model.clone();
+    let handler = RefCell::new(Some(handler));
+    bar.connect_destroy(move |_| {
+        if let Some(handler) = handler.take() {
+            model.disconnect(handler);
+        }
+    });
 }
 
 fn section(items: &[(&str, &str)]) -> gio::Menu {
