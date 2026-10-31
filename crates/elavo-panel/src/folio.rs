@@ -1,6 +1,7 @@
-//! Folio's own menus. The desktop, a Nautilus window, and Folio's own
-//! dialogs are one application here, so the bar keeps these menus instead
-//! of the focused window's.
+//! Folio's own menus. The desktop, a Files window, and the shell windows
+//! named in `FOLIO_APPS` are one application here, so the bar keeps these
+//! menus instead of the focused window's. Any other application shows the
+//! menu it exports.
 //!
 //! Nautilus exports almost none of its menu over D-Bus. Items that act on
 //! the focused window go through the Folio Files plugin
@@ -28,23 +29,40 @@ const DESKTOP_BUS: &str = "io.elavo.Desktop";
 const DESKTOP_PATH: &str = "/io/elavo/Desktop";
 const DESKTOP_IFACE: &str = "io.elavo.Desktop";
 
-/// Nothing focused, Nautilus, or one of Folio's own windows (the panel's
-/// dialogs, the dock, the desktop). System Settings is its own application.
-pub(crate) const SYSTEM_SETTINGS: &str = "io.elavo.SystemSettings";
+/// Focused windows that show Folio's menus. Files is here because Nautilus
+/// does not export a menubar. The rest are shell surfaces that are Folio
+/// itself. A new application is not added: it exports its own menu, and the
+/// panel shows that.
+const FOLIO_APPS: &[&str] = &[
+    NAUTILUS,
+    "io.elavo.Desktop",
+    "io.elavo.Panel",
+    "io.elavo.PanelPreview",
+    "io.elavo.Dock",
+    "io.elavo.Lens",
+    "io.elavo.Switcher",
+    "io.elavo.Applications",
+];
 
+/// One window, so the panel does not offer New Window. A second launch
+/// raises the window that is already open.
+pub fn keeps_one_window(app_id: &str) -> bool {
+    matches!(app_id, "io.elavo.SystemSettings" | "io.elavo.AppBay")
+}
+
+/// Nothing focused counts as the desktop, which is Folio. A focused window
+/// is Folio only when its id is in [`FOLIO_APPS`].
 pub fn is_folio(app_id: Option<&str>) -> bool {
     match app_id {
         None => true,
-        Some(NAUTILUS) => true,
-        Some(SYSTEM_SETTINGS) => false,
-        Some(id) => id.starts_with("io.elavo."),
+        Some(id) => FOLIO_APPS.contains(&id),
     }
 }
 
-/// A window that belongs to Folio: Nautilus, or one of Folio's own programs.
-/// System Settings is not one of them, so Hide Others can hide it.
+/// A window Hide Others leaves up: Files, or one of the shell surfaces in
+/// [`FOLIO_APPS`].
 pub fn is_folio_window(app_id: &str) -> bool {
-    app_id != SYSTEM_SETTINGS && (app_id == NAUTILUS || app_id.starts_with("io.elavo."))
+    FOLIO_APPS.contains(&app_id)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1187,14 +1205,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn folio_is_the_desktop_nautilus_and_elavo_windows() {
+    fn folio_is_an_allowlist() {
         assert!(is_folio(None));
         assert!(is_folio(Some(NAUTILUS)));
         assert!(is_folio(Some("io.elavo.Panel")));
+        assert!(is_folio(Some("io.elavo.PanelPreview")));
         assert!(is_folio(Some("io.elavo.Dock")));
-        assert!(!is_folio(Some("io.elavo.SystemSettings")));
-        assert!(!is_folio_window("io.elavo.SystemSettings"));
+        assert!(is_folio(Some("io.elavo.Desktop")));
+        assert!(is_folio(Some("io.elavo.Lens")));
+        assert!(is_folio(Some("io.elavo.Switcher")));
+        assert!(is_folio(Some("io.elavo.Applications")));
+        assert!(is_folio_window(NAUTILUS));
         assert!(is_folio_window("io.elavo.Panel"));
+        assert!(!is_folio(Some("io.elavo.SystemSettings")));
+        assert!(!is_folio(Some("io.elavo.AppBay")));
+        assert!(!is_folio(Some("io.elavo.Music")));
+        assert!(!is_folio_window("io.elavo.SystemSettings"));
+        assert!(!is_folio_window("io.elavo.AppBay"));
         assert!(!is_folio(Some("org.mozilla.firefox")));
         assert!(!is_folio(Some("cursor")));
         assert!(!is_folio(Some("")));

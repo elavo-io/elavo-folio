@@ -636,7 +636,7 @@ impl AppMenu {
 /// New Window launches the application's desktop file again. System Settings
 /// keeps one window, so a second launch only raises it.
 fn shows_new_window(app_id: &str, has_desktop_file: bool) -> bool {
-    has_desktop_file && app_id != crate::folio::SYSTEM_SETTINGS
+    has_desktop_file && !crate::folio::keeps_one_window(app_id)
 }
 
 /// An application's exported menus fill in over D-Bus after the bar is
@@ -849,7 +849,8 @@ mod tests {
 
     #[test]
     fn system_settings_has_no_new_window() {
-        assert!(!shows_new_window(crate::folio::SYSTEM_SETTINGS, true));
+        assert!(!shows_new_window("io.elavo.SystemSettings", true));
+        assert!(!shows_new_window("io.elavo.AppBay", true));
         assert!(shows_new_window("brave-browser", true));
         assert!(!shows_new_window("brave-browser", false));
     }
