@@ -88,7 +88,6 @@ fn model() -> gio::Menu {
 pub fn button(window: &gtk::ApplicationWindow) -> gtk::MenuButton {
     let button = gtk::MenuButton::builder()
         .icon_name("elavo-sun-symbolic")
-        .tooltip_text("Elavo")
         .css_classes(["flat", "elavo-panel-menu"])
         .menu_model(&model())
         .always_show_arrow(false)

@@ -29,6 +29,9 @@ const RADIUS: i32 = 14;
 
 struct BlurSlot {
     blur: elavo_common::blur::BackgroundBlur,
+    /// The popup surface this effect was bound to. A reposition can replace
+    /// the surface without a new widget, and the old effect then does nothing.
+    surface: usize,
     part: (i32, i32, i32, i32, i32),
 }
 
@@ -57,19 +60,33 @@ pub fn prepare(popover: &gtk::Popover, from_bar: bool) {
     popover.connect_show(|popover| walk(popover.upcast_ref(), false));
 
     let placed = Rc::new(Cell::new(false));
-    let placed_on_unmap = Rc::clone(&placed);
+    let tries = Rc::new(Cell::new(0_i32));
+    // Repositioning the popup unmaps it. That is not a close: clearing
+    // `placed` there made the next frame move the menu again, so it
+    // flickered and the blur, released with the unmap, never came back.
     popover.connect_unmap(move |popover| {
-        placed_on_unmap.set(false);
         release_blur(popover);
+    });
+    let placed_on_close = Rc::clone(&placed);
+    let tries_on_close = Rc::clone(&tries);
+    popover.connect_closed(move |_| {
+        placed_on_close.set(false);
+        tries_on_close.set(0);
     });
 
     popover.connect_map(move |popover| {
         let key = widget_key(popover.upcast_ref());
         let start = TICKING.with(|ticking| ticking.borrow_mut().insert(key));
+        // A tick left over from the reposition still owns the key. The
+        // unmap dropped the blur, so this map has to put it back.
+        if menu_blur_enabled() {
+            sync_blur(popover);
+        }
         if !start {
             return;
         }
         let placed = Rc::clone(&placed);
+        let tries = Rc::clone(&tries);
         popover.add_tick_callback(move |widget, _| {
             let Some(popover) = widget.downcast_ref::<gtk::Popover>() else {
                 return glib::ControlFlow::Break;
@@ -83,8 +100,20 @@ pub fn prepare(popover: &gtk::Popover, from_bar: bool) {
                 return glib::ControlFlow::Break;
             }
             walk(popover.upcast_ref(), false);
-            if from_bar && !placed.get() && place_bar_menu(popover).is_some() {
-                placed.set(true);
+            if from_bar && !placed.get() {
+                match place_bar_menu(popover) {
+                    Some(false) => placed.set(true),
+                    Some(true) => {
+                        let n = tries.get();
+                        tries.set(n + 1);
+                        // One correction, then one check. More than that
+                        // walks the menu down the screen.
+                        if n >= 1 {
+                            placed.set(true);
+                        }
+                    }
+                    None => {}
+                }
             }
             // The region is surface-local, so it does not wait for the
             // popup's placement. Sent before the first buffer commit, the
@@ -94,11 +123,6 @@ pub fn prepare(popover: &gtk::Popover, from_bar: bool) {
             }
             glib::ControlFlow::Continue
         });
-        // A menu opened before keeps its last size, so its blur can go out
-        // with the first frame. The tick corrects it if the size changed.
-        if menu_blur_enabled() {
-            sync_blur(popover);
-        }
     });
     popover.connect_destroy(drop_blur);
     crate::drag::track_menu(popover);
@@ -199,6 +223,15 @@ fn sync_blur(popover: &gtk::Popover) {
         RADIUS,
     );
     let key = widget_key(popover.upcast_ref());
+    let surface_id = surface.as_ptr() as usize;
+    let stale = BLURS.with(|map| {
+        map.borrow()
+            .get(&key)
+            .is_some_and(|slot| slot.surface != surface_id)
+    });
+    if stale {
+        release_blur(popover);
+    }
     BLURS.with(|map| {
         let mut map = map.borrow_mut();
         if let Entry::Vacant(entry) = map.entry(key) {
@@ -206,6 +239,7 @@ fn sync_blur(popover: &gtk::Popover) {
             {
                 entry.insert(BlurSlot {
                     blur,
+                    surface: surface_id,
                     part: (0, 0, 0, 0, -1),
                 });
             }

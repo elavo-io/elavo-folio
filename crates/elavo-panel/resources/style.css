@@ -144,6 +144,16 @@ popover.elavo-panel-dropdown > contents {
   font-feature-settings: "tnum";
 }
 
+.elavo-control-tile {
+  border-radius: 16px;
+  padding: 10px 12px;
+  background-color: alpha(currentColor, 0.08);
+}
+
+.elavo-control scale {
+  min-height: 28px;
+}
+
 menubar.elavo-panel-appmenu {
   padding: 0;
   margin-left: 2px;
@@ -187,6 +197,13 @@ menubar.elavo-panel-appmenu > item:selected {
   padding: 0;
   min-width: 22px;
   min-height: 22px;
+}
+
+/* Status icons are 16px, like the indicators beside them. The bar button's
+   8px side padding would stack on the row's 12px gap. */
+.elavo-panel-bar button.elavo-panel-status-item {
+  padding: 0;
+  min-width: 16px;
 }
 
 .elavo-panel-menu-popover menu,

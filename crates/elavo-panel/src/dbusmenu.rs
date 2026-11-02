@@ -207,7 +207,18 @@ impl DbusMenu {
                 self.path.clone(),
                 node.id,
             );
-            action.connect_activate(move |_, _| clicked(&bus, &sender, &path, id));
+            {
+                let (bus, sender, path) = (bus.clone(), sender.clone(), path.clone());
+                action.connect_activate(move |_, _| clicked(&bus, &sender, &path, id));
+            }
+            if action.state().is_some() {
+                action.connect_change_state(move |action, state| {
+                    if let Some(state) = state {
+                        action.set_state(state);
+                    }
+                    clicked(&bus, &sender, &path, id);
+                });
+            }
             actions.push(action);
             let item = gio::MenuItem::new(Some(&label), Some(&format!("app.{name}")));
             if let Some(accel) = accel(&node.props) {
@@ -222,8 +233,14 @@ impl DbusMenu {
     }
 }
 
+/// `Event` is `(isvu)`. The `i32` becomes the variant on the way into the
+/// tuple, so this must not box it again.
+fn event_args(id: i32) -> glib::Variant {
+    (id, "clicked", 0i32.to_variant(), 0u32).to_variant()
+}
+
 fn clicked(bus: &gio::DBusConnection, sender: &str, path: &str, id: i32) {
-    let args = (id, "clicked", 0i32.to_variant(), 0u32).to_variant();
+    let args = event_args(id);
     bus.call(
         Some(sender),
         path,
@@ -234,7 +251,11 @@ fn clicked(bus: &gio::DBusConnection, sender: &str, path: &str, id: i32) {
         gio::DBusCallFlags::NONE,
         DBUS_TIMEOUT_MS,
         None::<&gio::Cancellable>,
-        |_| {},
+        |result| {
+            if let Err(err) = result {
+                glib::g_warning!("elavo-panel", "menu item: {err}");
+            }
+        },
     );
 }
 
@@ -332,5 +353,14 @@ mod tests {
         );
         assert_eq!(to_accel(&keys(&["Del"])).as_deref(), Some("Delete"));
         assert_eq!(to_accel(&keys(&["Hyper", "x"])), None);
+    }
+
+    #[test]
+    fn a_clicked_event_carries_a_variant() {
+        let args = event_args(3);
+        assert_eq!(args.type_().as_str(), "(isvu)");
+        let data = args.child_value(2);
+        assert_eq!(data.type_().as_str(), "v");
+        assert_eq!(data.as_variant().unwrap().type_().as_str(), "i");
     }
 }

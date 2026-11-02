@@ -1,12 +1,16 @@
-//! Network, volume, and battery icons. Display only: in phase 3 a click on
-//! this area opens the control center.
+//! The right side of the bar: status-menu apps, network, volume, battery,
+//! Control Center, Search, and the clock.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
+
+use crate::control;
+use crate::panelcfg;
+use crate::statusmenu;
 
 #[derive(Default)]
 struct Indicator {
@@ -45,32 +49,69 @@ impl Indicator {
     }
 }
 
-#[derive(Default)]
 pub struct Status {
     network: Indicator,
     volume: Indicator,
     battery: Indicator,
+    show_volume: Cell<bool>,
+    _watch: RefCell<Option<gio::FileMonitor>>,
 }
 
 impl Status {
     pub fn new() -> Rc<Self> {
-        let status = Rc::new(Self::default());
+        statusmenu::start();
+        let status = Rc::new(Self {
+            network: Indicator::default(),
+            volume: Indicator::default(),
+            battery: Indicator::default(),
+            show_volume: Cell::new(panelcfg::show_volume()),
+            _watch: RefCell::default(),
+        });
+        let weak = Rc::downgrade(&status);
+        status._watch.replace(panelcfg::watch(move |shown| {
+            if let Some(status) = weak.upgrade() {
+                status.show_volume.set(shown);
+                status.reveal_volume();
+            }
+        }));
         glib::spawn_future_local(watch_network(Rc::downgrade(&status)));
         glib::spawn_future_local(watch_battery(Rc::downgrade(&status)));
         poll_volume(Rc::downgrade(&status));
         status
     }
 
-    pub fn widget(&self) -> gtk::Box {
+    /// Status menu, indicators, Control Center, Search, then the clock,
+    /// which is the rightmost item on the bar.
+    pub fn widget(&self, clock: &gtk::Label) -> gtk::Box {
         let row = gtk::Box::builder()
             .spacing(12)
             .css_classes(["elavo-panel-status"])
             .build();
+        row.append(&statusmenu::row());
         row.append(&self.network.image());
-        row.append(&self.volume.image());
+        let volume = self.volume.image();
+        volume.set_visible(self.show_volume.get() && volume.is_visible());
+        row.append(&volume);
         row.append(&self.battery.image());
+        row.append(&control::button());
         row.append(&search_button());
+        clock.set_valign(gtk::Align::Center);
+        row.append(clock);
         row
+    }
+
+    fn reveal_volume(&self) {
+        let show = self.show_volume.get();
+        let icon = self.volume.icon.borrow().clone();
+        for image in self
+            .volume
+            .images
+            .borrow()
+            .iter()
+            .filter_map(|i| i.upgrade())
+        {
+            Indicator::apply(&image, if show { icon.as_deref() } else { None });
+        }
     }
 }
 
@@ -83,7 +124,6 @@ fn search_button() -> gtk::Button {
     let button = gtk::Button::builder()
         .css_classes(["elavo-panel-lens"])
         .child(&icon)
-        .tooltip_text("Search")
         .build();
     button.connect_clicked(|_| {
         let argv: Vec<&std::ffi::OsStr> = ["elavo-lens", "--toggle"]
@@ -221,6 +261,7 @@ fn poll_volume(status: std::rc::Weak<Status>) {
                 return;
             };
             status.volume.set(output.as_deref().and_then(volume_icon));
+            status.reveal_volume();
             drop(status);
             glib::timeout_future(Duration::from_secs(3)).await;
         }

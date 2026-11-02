@@ -5,14 +5,17 @@ mod appmenu;
 mod backdrop;
 mod clock;
 mod contrast;
+mod control;
 mod dbusmenu;
 mod drag;
 mod dropdown;
 mod focus;
 mod folio;
 mod menu;
+mod panelcfg;
 mod registrar;
 mod status;
+mod statusmenu;
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
@@ -233,8 +236,7 @@ impl Panel {
         let bar = gtk::CenterBox::builder()
             .css_classes(["elavo-panel-bar", "on-dark"])
             .start_widget(&start)
-            .center_widget(&self.clock.label())
-            .end_widget(&self.status.widget())
+            .end_widget(&self.status.widget(&self.clock.label()))
             .build();
         if preview {
             // The bar's default alignment would stretch it over the whole
