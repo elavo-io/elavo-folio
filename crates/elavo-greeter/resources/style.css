@@ -92,7 +92,7 @@ window.elavo-greeter-window {
 
 /* The glass is drawn in glass.rs; this sets the numerals' size. */
 .elavo-greeter-clock {
-  font-family: "Inter Display", "Inter", sans-serif;
+  font-family: "Google Sans Flex", "Inter Display", "Inter", sans-serif;
   font-size: 128px;
   font-weight: 700;
   font-feature-settings: "tnum";

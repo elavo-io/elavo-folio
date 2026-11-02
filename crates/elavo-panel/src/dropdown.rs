@@ -38,6 +38,25 @@ struct BlurSlot {
 thread_local! {
     static BLURS: RefCell<HashMap<usize, BlurSlot>> = RefCell::new(HashMap::new());
     static TICKING: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    /// The corrected offset for each bar button. Status menus are built anew
+    /// on every click; starting from this one opens them where they end up
+    /// instead of moving them after the first frame.
+    static OFFSETS: RefCell<HashMap<usize, (i32, i32)>> = RefCell::new(HashMap::new());
+}
+
+fn debug_enabled() -> bool {
+    thread_local! {
+        static ON: bool = std::env::var("ELAVO_PANEL_BLUR_DEBUG").ok().as_deref() == Some("1");
+    }
+    ON.with(|on| *on)
+}
+
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        if debug_enabled() {
+            glib::g_message!("elavo-panel", "menu {}", format!($($arg)*));
+        }
+    };
 }
 
 /// Style `popover` and, when `from_bar` is set, keep it off the panel and
@@ -54,31 +73,63 @@ pub fn prepare(popover: &gtk::Popover, from_bar: bool) {
         // the button, and a menu wider than the button then lands on the
         // screen edge.
         popover.set_halign(gtk::Align::Start);
-        popover.set_offset(0, GAP);
+        let offset = popover
+            .parent()
+            .and_then(|parent| OFFSETS.with(|map| map.borrow().get(&widget_key(&parent)).copied()))
+            .unwrap_or((0, GAP));
+        popover.set_offset(offset.0, offset.1);
     }
 
     popover.connect_show(|popover| walk(popover.upcast_ref(), false));
 
     let placed = Rc::new(Cell::new(false));
     let tries = Rc::new(Cell::new(0_i32));
-    // Repositioning the popup unmaps it. That is not a close: clearing
-    // `placed` there made the next frame move the menu again, so it
-    // flickered and the blur, released with the unmap, never came back.
+    let layout: Rc<RefCell<Option<(gdk::Surface, glib::SignalHandlerId)>>> = Rc::default();
+    let placed_on_unmap = Rc::clone(&placed);
+    let tries_on_unmap = Rc::clone(&tries);
+    let layout_on_unmap = Rc::clone(&layout);
     popover.connect_unmap(move |popover| {
+        trace!("{:#x} unmap", widget_key(popover.upcast_ref()));
+        placed_on_unmap.set(false);
+        tries_on_unmap.set(0);
+        if let Some((surface, id)) = layout_on_unmap.take() {
+            surface.disconnect(id);
+        }
         release_blur(popover);
     });
-    let placed_on_close = Rc::clone(&placed);
-    let tries_on_close = Rc::clone(&tries);
-    popover.connect_closed(move |_| {
-        placed_on_close.set(false);
-        tries_on_close.set(0);
+    // GTK sizes a new menu in its surface's layout, which runs after map
+    // and before the first frame is drawn. A region sent from here goes out
+    // with that frame; one sent at map has only the unallocated size.
+    let layout_on_map = Rc::clone(&layout);
+    popover.connect_map(move |popover| {
+        if !menu_blur_enabled() {
+            return;
+        }
+        let Some(surface) = popover.native().and_then(|native| native.surface()) else {
+            return;
+        };
+        let weak = popover.downgrade();
+        let id = surface.connect_layout(move |_, _, _| {
+            if let Some(popover) = weak.upgrade() {
+                sync_blur(&popover);
+            }
+        });
+        if let Some((old, old_id)) = layout_on_map.replace(Some((surface, id))) {
+            old.disconnect(old_id);
+        }
     });
 
     popover.connect_map(move |popover| {
         let key = widget_key(popover.upcast_ref());
+        trace!(
+            "{key:#x} map offset {:?} popup {:?} contents {:?}",
+            popover.offset(),
+            popup_of(popover).map(|p| (p.position_x(), p.position_y())),
+            contents_rect(popover)
+        );
         let start = TICKING.with(|ticking| ticking.borrow_mut().insert(key));
-        // A tick left over from the reposition still owns the key. The
-        // unmap dropped the blur, so this map has to put it back.
+        // A reopened menu keeps its last size, so its blur can go out with
+        // the first frame. The tick corrects it if the size changed.
         if menu_blur_enabled() {
             sync_blur(popover);
         }
@@ -115,11 +166,11 @@ pub fn prepare(popover: &gtk::Popover, from_bar: bool) {
                     None => {}
                 }
             }
-            // The region is surface-local, so it does not wait for the
-            // popup's placement. Sent before the first buffer commit, the
-            // menu never shows unblurred.
-            if menu_blur_enabled() {
-                sync_blur(popover);
+            // The region is double-buffered state. A static menu does not
+            // commit again on its own, so a region sent after its first
+            // frame would wait for the pointer to touch a row.
+            if menu_blur_enabled() && sync_blur(popover) {
+                popover.queue_draw();
             }
             glib::ControlFlow::Continue
         });
@@ -172,7 +223,17 @@ fn place_bar_menu(popover: &gtk::Popover) -> Option<bool> {
     )?;
     let shifted = next != popover.offset();
     if shifted {
+        trace!(
+            "{:#x} move popup ({}, {}) offset {:?} -> {next:?}",
+            widget_key(popover.upcast_ref()),
+            popup.position_x(),
+            popup.position_y(),
+            popover.offset()
+        );
         popover.set_offset(next.0, next.1);
+    }
+    if let Some(parent) = popover.parent() {
+        OFFSETS.with(|map| map.borrow_mut().insert(widget_key(&parent), next));
     }
     Some(shifted)
 }
@@ -198,19 +259,21 @@ fn menu_correction(
     Some((offset.0 + dx, offset.1 + dy))
 }
 
-fn sync_blur(popover: &gtk::Popover) {
+/// Keep the blur region on the menu's surface. True when a new region went
+/// out, which takes effect with the surface's next commit.
+fn sync_blur(popover: &gtk::Popover) -> bool {
     let Some(surface) = popover.native().and_then(|native| native.surface()) else {
-        return;
+        return false;
     };
     // The panel window is not a popup. Blur only the menu's own surface.
     if surface.downcast_ref::<gdk::Popup>().is_none() {
-        return;
+        return false;
     }
     let Some((x, y, width, height)) = contents_rect(popover) else {
-        return;
+        return false;
     };
     if width <= 0 || height <= 0 {
-        return;
+        return false;
     }
     // Widget coordinates start inside the popover's shadow. The blur region
     // is in surface coordinates, which start at the shadow's outer edge.
@@ -230,33 +293,42 @@ fn sync_blur(popover: &gtk::Popover) {
             .is_some_and(|slot| slot.surface != surface_id)
     });
     if stale {
+        trace!("{key:#x} surface changed");
         release_blur(popover);
     }
     BLURS.with(|map| {
         let mut map = map.borrow_mut();
         if let Entry::Vacant(entry) = map.entry(key) {
-            if let Some(blur) = elavo_common::blur::BackgroundBlur::for_widget(popover.upcast_ref())
-            {
-                entry.insert(BlurSlot {
-                    blur,
-                    surface: surface_id,
-                    part: (0, 0, 0, 0, -1),
-                });
+            match elavo_common::blur::BackgroundBlur::for_widget(popover.upcast_ref()) {
+                Some(blur) => {
+                    trace!("{key:#x} attach surface {surface_id:#x}");
+                    entry.insert(BlurSlot {
+                        blur,
+                        surface: surface_id,
+                        part: (0, 0, 0, 0, -1),
+                    });
+                }
+                None => trace!("{key:#x} attach failed"),
             }
         }
-        if let Some(slot) = map.get_mut(&key) {
-            if slot.part != part {
-                slot.blur.set_rounds(&[part]);
-                slot.part = part;
-            }
+        let Some(slot) = map.get_mut(&key) else {
+            return false;
+        };
+        if slot.part == part {
+            return false;
         }
-    });
+        trace!("{key:#x} region {:?} -> {part:?}", slot.part);
+        slot.blur.set_rounds(&[part]);
+        slot.part = part;
+        true
+    })
 }
 
 fn release_blur(popover: &gtk::Popover) {
     let key = widget_key(popover.upcast_ref());
     BLURS.with(|map| {
         if let Some(slot) = map.borrow_mut().remove(&key) {
+            trace!("{key:#x} release");
             slot.blur.release();
         }
     });

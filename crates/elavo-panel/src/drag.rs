@@ -9,6 +9,9 @@
 //! ends, the menus get their grab back, so a menu left open closes on a click
 //! elsewhere.
 //!
+//! A press released quickly is a click: the menu opens on the release, with
+//! its grab, as GTK opens it.
+//!
 //! A drag ends on its release, on the next press, or when the menus close.
 //! Hovering after that never opens a menu.
 
@@ -26,9 +29,19 @@ const DRAG_OVER: &str = "elavo-drag-over";
 /// `GTK_BUTTON_ROLE_TITLE`. gtk4-rs does not export the model button's role.
 const ROLE_TITLE: i32 = 3;
 
+/// A press held this long on a title becomes a drag. A release before then
+/// is a click, and its menu opens once, with its grab. Reopening a menu to
+/// give it the grab back made it blink.
+const HOLD_DELAY: Duration = Duration::from_millis(150);
+/// Moving this far with the button down starts the drag before the delay.
+const HOLD_SLOP: f64 = 4.0;
+
 #[derive(Default)]
 struct Drag {
     active: Cell<bool>,
+    /// The title pressed, until the press turns into a click or a drag.
+    pending: RefCell<Option<(gtk::Widget, (f64, f64))>>,
+    hold_timer: RefCell<Option<glib::SourceId>>,
     on_opener: Cell<bool>,
     opener: RefCell<Option<gtk::Widget>>,
     row: RefCell<Option<gtk::Widget>>,
@@ -76,7 +89,12 @@ pub fn track_menu(popover: &gtk::Popover) {
         };
         glib::idle_add_local_once(move || {
             if open_popovers(&panel).is_empty() {
-                DRAG.with(|drag| cancel(drag, "menus closed"));
+                DRAG.with(|drag| {
+                    // A press closes the open menus before its own opens.
+                    if drag.pending.borrow().is_none() {
+                        cancel(drag, "menus closed");
+                    }
+                });
             }
         });
     });
@@ -129,8 +147,26 @@ fn handle(drag: &Drag, panel: &gtk::Widget, event: &gdk::Event) -> glib::Propaga
     let Some(point) = point else {
         return glib::Propagation::Proceed;
     };
+    let pending = drag.pending.borrow().clone();
     match kind {
         gdk::EventType::ButtonPress if primary => press(drag, panel, point),
+        gdk::EventType::MotionNotify if pending.is_some() => {
+            if let Some((opener, from)) = pending {
+                if (point.0 - from.0).hypot(point.1 - from.1) >= HOLD_SLOP {
+                    begin_drag(drag, panel, &opener);
+                    follow(drag, panel, point);
+                }
+            }
+            glib::Propagation::Proceed
+        }
+        gdk::EventType::ButtonRelease if primary && pending.is_some() => {
+            clear_pending(drag);
+            if let Some((opener, _)) = pending {
+                trace!("click on an opener: open with its grab");
+                open(&opener);
+            }
+            glib::Propagation::Stop
+        }
         gdk::EventType::MotionNotify if drag.active.get() => {
             follow(drag, panel, point);
             glib::Propagation::Proceed
@@ -156,16 +192,43 @@ fn press(drag: &Drag, panel: &gtk::Widget, point: (f64, f64)) -> glib::Propagati
             return glib::Propagation::Stop;
         }
     }
-    // The menu opens on the press, so a held press can reach its items. An
-    // open menu is closed first, so it reopens without its grab. The press
-    // and its release are kept from the sun and the titles, which would
-    // otherwise toggle the menu on the release, or wait for a release they
-    // never get.
-    trace!("press on an opener: open");
+    // A held press opens the menu without its grab, so the press can reach
+    // its items. An open menu is closed first, so it reopens without its
+    // grab. The press and its release are kept from the sun and the titles,
+    // which would otherwise toggle the menu on the release, or wait for a
+    // release they never get.
+    trace!("press on an opener");
     close_all(panel);
-    start(drag, panel, &opener);
-    open(&opener);
+    let weak_panel = panel.downgrade();
+    let timer = glib::timeout_add_local_once(HOLD_DELAY, move || {
+        DRAG.with(|drag| {
+            drag.hold_timer.take();
+            let Some(panel) = weak_panel.upgrade() else {
+                return;
+            };
+            let pending = drag.pending.borrow().clone();
+            if let Some((opener, _)) = pending {
+                begin_drag(drag, &panel, &opener);
+            }
+        });
+    });
+    drag.pending.replace(Some((opener, point)));
+    drag.hold_timer.replace(Some(timer));
     glib::Propagation::Stop
+}
+
+fn begin_drag(drag: &Drag, panel: &gtk::Widget, opener: &gtk::Widget) {
+    clear_pending(drag);
+    trace!("hold on an opener: open without its grab");
+    start(drag, panel, opener);
+    open(opener);
+}
+
+fn clear_pending(drag: &Drag) {
+    drag.pending.take();
+    if let Some(timer) = drag.hold_timer.take() {
+        timer.remove();
+    }
 }
 
 fn start(drag: &Drag, panel: &gtk::Widget, opener: &gtk::Widget) {
@@ -259,6 +322,7 @@ fn cancel(drag: &Drag, why: &str) {
     if drag.active.replace(false) {
         trace!("end: {why}");
     }
+    clear_pending(drag);
     drag.on_opener.set(false);
     drag.opener.take();
     unhold(drag);
