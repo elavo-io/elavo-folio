@@ -1,7 +1,7 @@
 //! The menus that open from the bar.
 //!
-//! When the compositor offers blur, each one is the window color at 62%,
-//! the same mix as the dock's shelf, from `$elavo-panel-menu-bg` in the
+//! When the compositor offers blur, each one is the window color at 75%,
+//! from `$elavo-panel-menu-bg` in the
 //! Elavo theme, and the compositor blurs what is behind it. Without blur
 //! the menus are opaque. A menu that opens from the bar sits 10px below the
 //! panel, and at least 10px in from the left edge of the screen.
