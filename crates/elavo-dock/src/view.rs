@@ -134,6 +134,8 @@ pub trait Host {
     fn dragging(&self) -> Option<String>;
     fn classify(&self, files: &[gio::File]) -> Payload;
     fn can_open(&self, key: &str, files: &[gio::File]) -> bool;
+    /// MimeType covers the files; firmer drop highlight only.
+    fn opens_mime(&self, key: &str, files: &[gio::File]) -> bool;
     fn accept_drop(&self, intent: Intent, payload: Payload) -> bool;
     /// The divider was dragged; `size` is the requested icon size.
     fn resize(&self, size: i32);
@@ -1406,6 +1408,22 @@ impl DockView {
     }
 
     fn update_hover(&self) {
+        let mime_key = {
+            let state = self.imp().state.borrow();
+            let files = match state.dnd.as_ref().and_then(|d| d.payload.as_ref()) {
+                Some(Payload::Files(files)) => files.clone(),
+                _ => Vec::new(),
+            };
+            let key = state.dnd.as_ref().and_then(|d| match &d.intent {
+                Some(Intent::OpenWith(k)) => Some(k.clone()),
+                _ => None,
+            });
+            drop(state);
+            match (key, self.host()) {
+                (Some(key), Some(host)) if host.opens_mime(&key, &files) => Some(key),
+                _ => None,
+            }
+        };
         let (label, changed) = {
             let mut state = self.state();
             let target = state.dnd.as_ref().and_then(|d| match &d.intent {
@@ -1425,6 +1443,11 @@ impl DockView {
             for t in &state.tiles {
                 let on = target.as_ref() == Some(&t.tile.key);
                 t.drop.set_opacity(if on { 1.0 } else { 0.0 });
+                if on && mime_key.as_ref() == Some(&t.tile.key) {
+                    t.drop.add_css_class("elavo-dock-drop-mime");
+                } else {
+                    t.drop.remove_css_class("elavo-dock-drop-mime");
+                }
             }
             let changed = hovered != state.hovered;
             state.hovered = hovered.clone();

@@ -80,18 +80,24 @@ fn content_type(file: &gio::File) -> String {
     }
 }
 
-/// Whether the application says it opens every one of `files`.
+/// Whether a drop on this application should open `files` with it.
+///
+/// Any desktop entry whose Exec takes files or URIs (`%f`/`%F`/`%u`/`%U`)
+/// accepts the drop; MimeType is not required to cover the items. The app
+/// decides what to do with them. Entries with no file field codes reject.
 pub fn app_opens(info: &DesktopAppInfo, files: &[gio::File]) -> bool {
-    if files.is_empty() {
-        return false;
-    }
-    if !info.supports_uris() && !info.supports_files() {
+    !files.is_empty() && (info.supports_files() || info.supports_uris())
+}
+
+/// Stronger fit: every file's content type is listed in the application's
+/// MimeType. Used for a firmer drop highlight; it does not gate acceptance.
+pub fn app_opens_mime(info: &DesktopAppInfo, files: &[gio::File]) -> bool {
+    if !app_opens(info, files) {
         return false;
     }
     let supported = info.supported_types();
     if supported.is_empty() {
-        // Exec takes `%F`/`%U` with no MimeType list: accept any drop.
-        return true;
+        return false;
     }
     files.iter().all(|file| {
         let kind = content_type(file);
@@ -263,5 +269,50 @@ pub fn set_open_at_login(info: &DesktopAppInfo, id: &str, on: bool) {
     };
     if let Err(err) = result {
         glib::g_warning!("elavo-dock", "autostart {}: {err}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(extra: &str) -> DesktopAppInfo {
+        let file = glib::KeyFile::new();
+        let text = format!("[Desktop Entry]\nType=Application\nName=Patchy\n{extra}\n");
+        file.load_from_data(&text, glib::KeyFileFlags::NONE)
+            .unwrap();
+        DesktopAppInfo::from_keyfile(&file).unwrap()
+    }
+
+    #[test]
+    fn cursor_like_entry_accepts_a_folder() {
+        // Cursor ships %F with a workspace-only MimeType; folders must still
+        // highlight and open.
+        let app = info("Exec=/bin/true %F\nMimeType=application/x-cursor-workspace;");
+        let folder = gio::File::for_path("/tmp");
+        assert!(app_opens(&app, std::slice::from_ref(&folder)));
+        assert!(!app_opens_mime(&app, std::slice::from_ref(&folder)));
+    }
+
+    #[test]
+    fn mime_match_is_a_stronger_signal() {
+        let app = info("Exec=/bin/true %F\nMimeType=text/plain;inode/directory;");
+        let folder = gio::File::for_path("/tmp");
+        assert!(app_opens(&app, std::slice::from_ref(&folder)));
+        assert!(app_opens_mime(&app, std::slice::from_ref(&folder)));
+    }
+
+    #[test]
+    fn exec_without_file_field_codes_rejects() {
+        let app = info("Exec=/bin/true");
+        let folder = gio::File::for_path("/tmp");
+        assert!(!app_opens(&app, std::slice::from_ref(&folder)));
+        assert!(!app_opens_mime(&app, std::slice::from_ref(&folder)));
+    }
+
+    #[test]
+    fn empty_drop_is_rejected() {
+        let app = info("Exec=/bin/true %U");
+        assert!(!app_opens(&app, &[]));
     }
 }

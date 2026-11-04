@@ -336,7 +336,14 @@ pub fn launch_files_with_pids(info: &DesktopAppInfo, files: &[gio::File]) -> Vec
 }
 
 fn launch_uris_with_pids(info: &DesktopAppInfo, uris: &[&str], action: Option<&str>) -> Vec<i32> {
-    let context = gtk::gdk::Display::default().map(|d| d.app_launch_context());
+    // GdkWaylandAppLaunchContext requests an xdg_activation_v1 token for the
+    // default seat when the context is used, so labwc can focus the new window.
+    let context = gtk::gdk::Display::default().map(|d| {
+        let ctx = d.app_launch_context();
+        // CurrentTime: the Wayland backend fills in the last seat serial.
+        ctx.set_timestamp(0);
+        ctx
+    });
     match action {
         Some(action) => {
             info.launch_action(action, context.as_ref());
