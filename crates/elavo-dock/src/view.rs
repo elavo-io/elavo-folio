@@ -231,6 +231,8 @@ struct TileState {
     scale: f64,
     dot: gtk::Box,
     badge: gtk::Label,
+    /// CSS-styled overlay while a file drop targets this icon.
+    drop: gtk::Box,
     divider: Option<gtk::Separator>,
 }
 
@@ -238,6 +240,7 @@ impl TileState {
     fn unparent(&self) {
         self.dot.unparent();
         self.badge.unparent();
+        self.drop.unparent();
         if let Some(divider) = &self.divider {
             divider.unparent();
         }
@@ -857,17 +860,23 @@ impl DockView {
         let now = glib::monotonic_time() as f64 / 1e6;
         let first = self.imp().state.borrow().tiles.is_empty();
         let mut state = self.state();
-        let mut old: Vec<TileState> = std::mem::take(&mut state.tiles);
-        let mut merged: Vec<TileState> = Vec::with_capacity(tiles.len());
+        // Keep each old tile's index so a leaving one can shrink in place.
+        // Enumerating leftovers after `remove` reused 0..n and inserted the
+        // first departure at the far left of the dock.
+        let mut old: Vec<(usize, TileState)> = std::mem::take(&mut state.tiles)
+            .into_iter()
+            .enumerate()
+            .collect();
+        let mut merged: Vec<(usize, TileState)> = Vec::with_capacity(tiles.len());
         let vertical = state.geom.position.vertical();
         for tile in tiles {
-            let existing = old.iter().position(|t| t.tile.key == tile.key);
-            let mut ts = match existing {
+            let existing = old.iter().position(|(_, t)| t.tile.key == tile.key);
+            let (orig_i, mut ts) = match existing {
                 Some(i) => {
-                    let mut ts = old.remove(i);
+                    let (orig_i, mut ts) = old.remove(i);
                     ts.leaving = false;
                     ts.presence.target = 1.0;
-                    ts
+                    (orig_i, ts)
                 }
                 None => {
                     let dot = gtk::Box::builder().css_classes(["elavo-dock-dot"]).build();
@@ -876,6 +885,11 @@ impl DockView {
                         .css_classes(["elavo-dock-badge"])
                         .build();
                     badge.set_parent(self);
+                    let drop = gtk::Box::builder()
+                        .css_classes(["elavo-dock-drop"])
+                        .opacity(0.0)
+                        .build();
+                    drop.set_parent(self);
                     let divider = (tile.section == Section::Divider).then(|| {
                         let divider = gtk::Separator::builder()
                             .orientation(if vertical {
@@ -888,28 +902,32 @@ impl DockView {
                         divider.set_parent(self);
                         divider
                     });
-                    TileState {
-                        tile: tile.clone(),
-                        presence: if first {
-                            Anim::at(1.0)
-                        } else {
-                            Anim {
-                                value: 0.0,
-                                target: 1.0,
-                            }
+                    (
+                        usize::MAX,
+                        TileState {
+                            tile: tile.clone(),
+                            presence: if first {
+                                Anim::at(1.0)
+                            } else {
+                                Anim {
+                                    value: 0.0,
+                                    target: 1.0,
+                                }
+                            },
+                            gap: Anim::default(),
+                            leaving: false,
+                            bounce_start: None,
+                            bounce_end: None,
+                            bounce_off: 0.0,
+                            start: 0.0,
+                            len: 0.0,
+                            scale: 1.0,
+                            dot,
+                            badge,
+                            drop,
+                            divider,
                         },
-                        gap: Anim::default(),
-                        leaving: false,
-                        bounce_start: None,
-                        bounce_end: None,
-                        bounce_off: 0.0,
-                        start: 0.0,
-                        len: 0.0,
-                        scale: 1.0,
-                        dot,
-                        badge,
-                        divider,
-                    }
+                    )
                 }
             };
             if ts.tile.badge != tile.badge {
@@ -931,17 +949,28 @@ impl DockView {
                 _ => {}
             }
             ts.tile = tile;
-            merged.push(ts);
+            merged.push((orig_i, ts));
         }
-        // Tiles that went away shrink out where they were.
-        for (i, mut ts) in old.into_iter().enumerate() {
-            ts.leaving = true;
-            ts.presence.target = 0.0;
-            ts.gap.target = 0.0;
-            let at = merged.len().min(i);
-            merged.insert(at, ts);
+        // Tiles that went away shrink out where they were: insert each
+        // before the surviving tile that used to follow it.
+        let mut leaving: Vec<(usize, TileState)> = old
+            .into_iter()
+            .map(|(orig_i, mut ts)| {
+                ts.leaving = true;
+                ts.presence.target = 0.0;
+                ts.gap.target = 0.0;
+                (orig_i, ts)
+            })
+            .collect();
+        leaving.sort_by_key(|(i, _)| *i);
+        for (orig_i, ts) in leaving.into_iter().rev() {
+            let at = merged
+                .iter()
+                .position(|(oi, _)| *oi > orig_i)
+                .unwrap_or(merged.len());
+            merged.insert(at, (orig_i, ts));
         }
-        state.tiles = merged;
+        state.tiles = merged.into_iter().map(|(_, ts)| ts).collect();
         if let Some(key) = state.drag_key.clone() {
             if let Some(i) = state.index(&key) {
                 state.tiles[i].presence.target = 0.0;
@@ -1082,6 +1111,7 @@ impl DockView {
                     bh,
                 ),
             );
+            place(t.drop.upcast_ref(), &icon);
         }
         if let Some(label) = imp.label.get() {
             let (_, natural) = label.preferred_size();
@@ -1319,7 +1349,12 @@ impl DockView {
         state.tiles.retain(|t| {
             let keep = !(t.leaving && t.presence.value <= 0.0);
             if !keep {
-                gone.push((t.dot.clone(), t.badge.clone(), t.divider.clone()));
+                gone.push((
+                    t.dot.clone(),
+                    t.badge.clone(),
+                    t.drop.clone(),
+                    t.divider.clone(),
+                ));
             }
             keep
         });
@@ -1331,9 +1366,10 @@ impl DockView {
             && state.drag_key.is_none()
             && state.hide.value < 0.2;
         drop(state);
-        for (dot, badge, divider) in gone {
+        for (dot, badge, drop_w, divider) in gone {
             dot.unparent();
             badge.unparent();
+            drop_w.unparent();
             if let Some(divider) = divider {
                 divider.unparent();
             }
@@ -1377,7 +1413,7 @@ impl DockView {
                 Some(Intent::Trash) => Some("trash".to_owned()),
                 _ => None,
             });
-            let hovered = match (target, state.pointer) {
+            let hovered = match (target.clone(), state.pointer) {
                 (Some(key), _) => Some(key),
                 (None, Some((u, v))) if state.dnd.is_none() => state
                     .hit(u, v)
@@ -1386,6 +1422,10 @@ impl DockView {
                     .map(|t| t.tile.key.clone()),
                 _ => None,
             };
+            for t in &state.tiles {
+                let on = target.as_ref() == Some(&t.tile.key);
+                t.drop.set_opacity(if on { 1.0 } else { 0.0 });
+            }
             let changed = hovered != state.hovered;
             state.hovered = hovered.clone();
             let label = hovered
@@ -1785,6 +1825,7 @@ impl DockView {
         let formats = gdk::ContentFormatsBuilder::new()
             .add_mime_type(ITEM_MIME)
             .add_type(gdk::FileList::static_type())
+            .add_mime_type("text/uri-list")
             .build();
         let target = gtk::DropTargetAsync::new(
             Some(formats),
@@ -1842,14 +1883,34 @@ impl DockView {
         let weak = self.downgrade();
         let drop = drop.clone();
         glib::spawn_future_local(async move {
-            let value = drop
+            let files = match drop
                 .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
-                .await;
-            let files = value
-                .ok()
-                .and_then(|v| v.get::<gdk::FileList>().ok())
-                .map(|l| l.files())
-                .unwrap_or_default();
+                .await
+            {
+                Ok(value) => value
+                    .get::<gdk::FileList>()
+                    .map(|l| l.files())
+                    .unwrap_or_default(),
+                Err(_) => {
+                    // Some sources only offer text/uri-list.
+                    match drop
+                        .read_value_future(glib::Type::STRING, glib::Priority::DEFAULT)
+                        .await
+                    {
+                        Ok(value) => value
+                            .get::<String>()
+                            .map(|s| {
+                                s.lines()
+                                    .map(str::trim)
+                                    .filter(|u| !u.is_empty() && !u.starts_with('#'))
+                                    .map(gio::File::for_uri)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default(),
+                        Err(_) => Vec::new(),
+                    }
+                }
+            };
             let Some(view) = weak.upgrade() else {
                 return;
             };

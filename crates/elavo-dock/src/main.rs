@@ -694,6 +694,37 @@ impl Dock {
         }
     }
 
+    /// Open `files` with the application, tracking PIDs for bounce and Force Quit.
+    pub fn open_files(self: &Rc<Self>, item: &Item<ObjectId>, files: &[gio::File]) {
+        let Some(entry) = self.entry(item) else {
+            return;
+        };
+        let track = !item.running() && pins::waits_for_a_window(&entry.id);
+        if track && self.launching.borrow().contains_key(&entry.id) {
+            return;
+        }
+        let pids = elavo_common::launch_files_with_pids(&entry.info, files);
+        if !pids.is_empty() {
+            self.launch_pids
+                .borrow_mut()
+                .entry(entry.id.clone())
+                .or_default()
+                .extend(pids);
+        }
+        if track {
+            self.launching
+                .borrow_mut()
+                .insert(entry.id.clone(), Instant::now());
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local_once(LAUNCH_TIMEOUT, move || {
+                if let Some(dock) = weak.upgrade() {
+                    dock.refresh();
+                }
+            });
+            self.refresh();
+        }
+    }
+
     /// SIGKILL the application's process tree and clear any launch bounce.
     pub fn force_quit(self: &Rc<Self>, item: &Item<ObjectId>) {
         let entry = self.entry(item);
@@ -1057,10 +1088,10 @@ impl Host for HostRef {
                 true
             }
             (Intent::OpenWith(key), Payload::Files(files)) => {
-                let Some(entry) = dock.item(&key).and_then(|i| dock.entry(&i)) else {
+                let Some(item) = dock.item(&key) else {
                     return false;
                 };
-                files::open_with(&entry.info, &files);
+                dock.open_files(&item, &files);
                 true
             }
             (Intent::IntoFolder(key), Payload::Files(files)) => {

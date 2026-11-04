@@ -80,3 +80,10 @@ popover.elavo-dock-fan .elavo-dock-stack-item:hover .elavo-dock-label {
 .elavo-dock-stack-header {
   padding: 2px 4px 4px;
 }
+
+/* File drop targeting an application (or folder) icon. */
+.elavo-dock-drop {
+  border-radius: 12px;
+  border: 2px solid alpha(var(--accent-bg-color, @theme_selected_bg_color), 0.95);
+  background-color: alpha(var(--accent-bg-color, @theme_selected_bg_color), 0.18);
+}

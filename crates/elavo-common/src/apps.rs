@@ -324,6 +324,18 @@ pub fn launch(info: &DesktopAppInfo, action: Option<&str>) {
 /// launch goes through D-Bus activation or a desktop action, which do not
 /// report PIDs.
 pub fn launch_with_pids(info: &DesktopAppInfo, action: Option<&str>) -> Vec<i32> {
+    launch_uris_with_pids(info, &[], action)
+}
+
+/// Launch `info` with `files` (as URIs, so `%U`/`%F` are filled), returning
+/// GSpawn PIDs when the launch is local.
+pub fn launch_files_with_pids(info: &DesktopAppInfo, files: &[gio::File]) -> Vec<i32> {
+    let uris: Vec<glib::GString> = files.iter().map(|f| f.uri()).collect();
+    let refs: Vec<&str> = uris.iter().map(|u| u.as_str()).collect();
+    launch_uris_with_pids(info, &refs, None)
+}
+
+fn launch_uris_with_pids(info: &DesktopAppInfo, uris: &[&str], action: Option<&str>) -> Vec<i32> {
     let context = gtk::gdk::Display::default().map(|d| d.app_launch_context());
     match action {
         Some(action) => {
@@ -333,7 +345,7 @@ pub fn launch_with_pids(info: &DesktopAppInfo, action: Option<&str>) -> Vec<i32>
         None => {
             let mut pids = Vec::new();
             let result = info.launch_uris_as_manager_with_fds(
-                &[],
+                uris,
                 context.as_ref(),
                 glib::SpawnFlags::SEARCH_PATH | glib::SpawnFlags::CLOEXEC_PIPES,
                 None,

@@ -8,7 +8,7 @@ pub mod matching;
 pub mod ranking;
 pub mod toplevels;
 
-pub use apps::{launch, launch_with_pids, AppEntry, AppIndex};
+pub use apps::{launch, launch_files_with_pids, launch_with_pids, AppEntry, AppIndex};
 pub use gio_unix::DesktopAppInfo;
 
 /// About Elavo is a toplevel of the panel process, so its Wayland app id is

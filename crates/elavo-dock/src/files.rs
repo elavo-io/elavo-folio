@@ -82,9 +82,16 @@ fn content_type(file: &gio::File) -> String {
 
 /// Whether the application says it opens every one of `files`.
 pub fn app_opens(info: &DesktopAppInfo, files: &[gio::File]) -> bool {
+    if files.is_empty() {
+        return false;
+    }
+    if !info.supports_uris() && !info.supports_files() {
+        return false;
+    }
     let supported = info.supported_types();
     if supported.is_empty() {
-        return false;
+        // Exec takes `%F`/`%U` with no MimeType list: accept any drop.
+        return true;
     }
     files.iter().all(|file| {
         let kind = content_type(file);
@@ -92,12 +99,6 @@ pub fn app_opens(info: &DesktopAppInfo, files: &[gio::File]) -> bool {
             .iter()
             .any(|s| gio::content_type_is_a(&kind, s) || gio::content_type_is_mime_type(&kind, s))
     })
-}
-
-pub fn open_with(info: &DesktopAppInfo, files: &[gio::File]) {
-    if let Err(err) = info.launch(files, context().as_ref()) {
-        glib::g_warning!("elavo-dock", "opening files with {:?}: {err}", info.id());
-    }
 }
 
 /// Moves on a worker thread: a move across file systems copies.
