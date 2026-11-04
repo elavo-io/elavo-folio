@@ -317,13 +317,35 @@ pub fn watch(changed: impl Fn() + 'static) -> Vec<gio::FileMonitor> {
 }
 
 pub fn launch(info: &DesktopAppInfo, action: Option<&str>) {
+    let _ = launch_with_pids(info, action);
+}
+
+/// Launch `info`, returning PIDs of processes GSpawn started. Empty when the
+/// launch goes through D-Bus activation or a desktop action, which do not
+/// report PIDs.
+pub fn launch_with_pids(info: &DesktopAppInfo, action: Option<&str>) -> Vec<i32> {
     let context = gtk::gdk::Display::default().map(|d| d.app_launch_context());
     match action {
-        Some(action) => info.launch_action(action, context.as_ref()),
+        Some(action) => {
+            info.launch_action(action, context.as_ref());
+            Vec::new()
+        }
         None => {
-            if let Err(err) = info.launch(&[], context.as_ref()) {
+            let mut pids = Vec::new();
+            let result = info.launch_uris_as_manager_with_fds(
+                &[],
+                context.as_ref(),
+                glib::SpawnFlags::SEARCH_PATH | glib::SpawnFlags::CLOEXEC_PIPES,
+                None,
+                Some(&mut |_, pid| pids.push(pid.0)),
+                None::<&std::fs::File>,
+                None::<&std::fs::File>,
+                None::<&std::fs::File>,
+            );
+            if let Err(err) = result {
                 glib::g_warning!("elavo", "launching {:?} failed: {err}", info.id());
             }
+            pids
         }
     }
 }

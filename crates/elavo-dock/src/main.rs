@@ -58,6 +58,9 @@ pub struct Dock {
     views: RefCell<Vec<(gtk::ApplicationWindow, DockView)>>,
     sections: RefCell<Sections<ObjectId>>,
     launching: RefCell<HashMap<String, Instant>>,
+    /// PIDs from dock launches, kept while the app is launching or running so
+    /// Force Quit can find them after the bounce ends.
+    launch_pids: RefCell<HashMap<String, Vec<i32>>>,
     badges: badges::Badges,
     trash: trash::Trash,
     dragging: RefCell<Option<String>>,
@@ -109,6 +112,7 @@ impl Dock {
                 minimized: Vec::new(),
             }),
             launching: RefCell::default(),
+            launch_pids: RefCell::default(),
             badges: badges::Badges::default(),
             trash: trash::Trash::default(),
             dragging: RefCell::default(),
@@ -353,6 +357,15 @@ impl Dock {
                 .collect();
             launching
                 .retain(|id, at| !running.contains(&id.as_str()) && at.elapsed() < LAUNCH_TIMEOUT);
+            let keep: Vec<String> = running
+                .iter()
+                .copied()
+                .map(str::to_owned)
+                .chain(launching.keys().cloned())
+                .collect();
+            self.launch_pids
+                .borrow_mut()
+                .retain(|id, _| keep.iter().any(|k| k == id));
         }
         self.sections.replace(sections);
         let tiles = self.tiles();
@@ -651,14 +664,23 @@ impl Dock {
         }
     }
 
+    pub fn is_launching(&self, id: &str) -> bool {
+        self.launching.borrow().contains_key(id)
+    }
+
     pub fn launch(self: &Rc<Self>, item: &Item<ObjectId>, action: Option<&str>) {
         let Some(entry) = self.entry(item) else {
             return;
         };
-        if action.is_none() && !item.running() && pins::waits_for_a_window(&entry.id) {
-            if self.launching.borrow().contains_key(&entry.id) {
-                return;
-            }
+        let track = action.is_none() && !item.running() && pins::waits_for_a_window(&entry.id);
+        if track && self.launching.borrow().contains_key(&entry.id) {
+            return;
+        }
+        let pids = elavo_common::launch_with_pids(&entry.info, action);
+        if !pids.is_empty() {
+            self.launch_pids.borrow_mut().insert(entry.id.clone(), pids);
+        }
+        if track {
             self.launching
                 .borrow_mut()
                 .insert(entry.id.clone(), Instant::now());
@@ -670,7 +692,32 @@ impl Dock {
             });
             self.refresh();
         }
-        elavo_common::launch(&entry.info, action);
+    }
+
+    /// SIGKILL the application's process tree and clear any launch bounce.
+    pub fn force_quit(self: &Rc<Self>, item: &Item<ObjectId>) {
+        let entry = self.entry(item);
+        let mut pids = Vec::new();
+        if let Some(id) = item.desktop_id.as_deref() {
+            self.launching.borrow_mut().remove(id);
+            if let Some(recorded) = self.launch_pids.borrow_mut().remove(id) {
+                pids.extend(recorded);
+            }
+        }
+        if let Some(entry) = entry.as_ref() {
+            pids.extend(bundle_pids(&entry.info));
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        for pid in pids {
+            kill_tree(pid);
+        }
+        if let Some(controller) = self.controller() {
+            for window in self.windows_of(item) {
+                controller.close(&window);
+            }
+        }
+        self.refresh();
     }
 
     /// Super+N: the Nth application, pins first.
@@ -1094,6 +1141,72 @@ fn follow_color_scheme() {
         static HELD: RefCell<Option<gio::Settings>> = const { RefCell::new(None) };
     }
     HELD.with(|slot| slot.replace(Some(desktop)));
+}
+
+/// PIDs whose executable or command line sits inside `info`'s `.eapp` bundle.
+/// Plain desktop files are not matched here: shared interpreters would make
+/// that unsafe. Those rely on PIDs recorded at launch.
+fn bundle_pids(info: &gio_unix::DesktopAppInfo) -> Vec<i32> {
+    let Some(bundle) = info.filename().and_then(|path| {
+        path.parent()
+            .filter(|p| p.extension().is_some_and(|e| e == "eapp"))
+            .and_then(|p| std::fs::canonicalize(p).ok())
+    }) else {
+        return Vec::new();
+    };
+    let Ok(proc) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut pids = Vec::new();
+    for entry in proc.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let proc_path = entry.path();
+        let under = std::fs::read_link(proc_path.join("exe"))
+            .ok()
+            .is_some_and(|exe| exe.starts_with(&bundle));
+        // Only argv[0]: a shell or editor that merely names the bundle in
+        // its arguments must not be killed.
+        let mentioned = std::fs::read(proc_path.join("cmdline"))
+            .ok()
+            .and_then(|cmd| cmd.split(|b| *b == 0).next().map(|a| a.to_vec()))
+            .is_some_and(|argv0| {
+                std::path::Path::new(&*String::from_utf8_lossy(&argv0)).starts_with(&bundle)
+            });
+        if under || mentioned {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+fn children_of(pid: i32) -> Vec<i32> {
+    let Ok(proc) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let needle = format!("{pid}");
+    proc.flatten()
+        .filter_map(|entry| {
+            let child = entry.file_name().to_string_lossy().parse::<i32>().ok()?;
+            let ppid = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            // /proc/pid/stat: pid (comm) state ppid ...
+            let close = ppid.rfind(')')?;
+            let mut fields = ppid[close + 1..].split_whitespace();
+            let _state = fields.next()?;
+            let parent = fields.next()?;
+            (parent == needle).then_some(child)
+        })
+        .collect()
+}
+
+fn kill_tree(pid: i32) {
+    for child in children_of(pid) {
+        kill_tree(child);
+    }
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
 }
 
 fn main() -> glib::ExitCode {

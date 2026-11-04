@@ -50,6 +50,20 @@ pub fn show_in_files(uri: &str) {
     });
 }
 
+/// URI to select in Files for this application: the `.eapp` bundle when the
+/// desktop file lives in one, otherwise the desktop file itself.
+pub fn reveal_uri(info: &DesktopAppInfo) -> Option<String> {
+    let path = info.filename()?;
+    let file = match path
+        .parent()
+        .filter(|p| p.extension().is_some_and(|e| e == "eapp"))
+    {
+        Some(bundle) => gio::File::for_path(bundle),
+        None => gio::File::for_path(&path),
+    };
+    Some(file.uri().to_string())
+}
+
 fn content_type(file: &gio::File) -> String {
     match file.query_info(
         "standard::content-type",
