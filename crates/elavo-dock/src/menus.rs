@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use elavo_dock_settings::{Position, Settings};
 use gtk::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
 use crate::others::{Display, Sort, View};
 use crate::{files, pins, trash, Dock, DockView, ABOUT_KEY, TRASH_KEY};
@@ -119,7 +119,16 @@ impl Menu {
         self.root.append_section(label, section);
     }
 
-    fn popup(mut self, view: &DockView, key: &str) {
+    fn popup(self, view: &DockView, key: &str) {
+        self.popup_configured(view, key, |_| {});
+    }
+
+    fn popup_configured(
+        mut self,
+        view: &DockView,
+        key: &str,
+        configure: impl FnOnce(&gtk::PopoverMenu),
+    ) {
         self.separator();
         if self.root.n_items() == 0 {
             return;
@@ -130,6 +139,7 @@ impl Menu {
         popover.set_has_arrow(false);
         popover.add_css_class("elavo-dock-menu");
         popover.insert_action_group("dock", Some(&self.actions));
+        configure(&popover);
         view.popup(popover.upcast_ref(), key);
     }
 }
@@ -342,8 +352,7 @@ fn app(
             },
         );
         options.append_section(None, &login);
-        if let Some(path) = entry.info.filename() {
-            let uri = gio::File::for_path(path).uri().to_string();
+        if let Some(uri) = files::reveal_uri(&entry.info) {
             let reveal = gio::Menu::new();
             reveal.append(
                 Some("Show in Files"),
@@ -355,7 +364,20 @@ fn app(
     }
 
     menu.separator();
-    if item.running() {
+    let launching = item
+        .desktop_id
+        .as_deref()
+        .is_some_and(|id| dock.is_launching(id));
+    if launching {
+        let weak = Rc::downgrade(dock);
+        let it = item.clone();
+        menu.item("Force Quit", move || {
+            if let Some(dock) = weak.upgrade() {
+                dock.force_quit(&it);
+            }
+        });
+        menu.popup(view, key);
+    } else if item.running() {
         let weak = Rc::downgrade(dock);
         let it = item.clone();
         menu.item("Hide", move || {
@@ -370,7 +392,7 @@ fn app(
         });
         let weak = Rc::downgrade(dock);
         let it = item.clone();
-        menu.item("Quit", move || {
+        let quit = menu.action(move || {
             let Some(dock) = weak.upgrade() else {
                 return;
             };
@@ -380,6 +402,19 @@ fn app(
                 }
             }
         });
+        let weak = Rc::downgrade(dock);
+        let it = item.clone();
+        let force = menu.action(move || {
+            if let Some(dock) = weak.upgrade() {
+                dock.force_quit(&it);
+            }
+        });
+        // Own section so Alt can swap the label without rebuilding the menu.
+        let quit_section = gio::Menu::new();
+        menu.add_section(None, &quit_section);
+        menu.popup_configured(view, key, move |popover| {
+            wire_alt_quit(popover, quit_section, quit, force);
+        });
     } else if entry.is_some() {
         let weak = Rc::downgrade(dock);
         let it = item.clone();
@@ -388,8 +423,49 @@ fn app(
                 dock.launch(&it, None);
             }
         });
+        menu.popup(view, key);
+    } else {
+        menu.popup(view, key);
     }
-    menu.popup(view, key);
+}
+
+fn alt_held() -> bool {
+    gdk::Display::default()
+        .and_then(|d| d.default_seat())
+        .and_then(|s| s.keyboard())
+        .is_some_and(|k| k.modifier_state().contains(gdk::ModifierType::ALT_MASK))
+}
+
+/// While the menu is open, holding Alt swaps Quit for Force Quit, as on a Mac.
+fn wire_alt_quit(popover: &gtk::PopoverMenu, section: gio::Menu, quit: String, force: String) {
+    let show = Rc::new(move |force_quit: bool| {
+        while section.n_items() > 0 {
+            section.remove(0);
+        }
+        if force_quit {
+            section.append(Some("Force Quit"), Some(&force));
+        } else {
+            section.append(Some("Quit"), Some(&quit));
+        }
+    });
+    show(alt_held());
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let show_press = show.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Alt_L || key == gdk::Key::Alt_R {
+            show_press(true);
+        }
+        glib::Propagation::Proceed
+    });
+    let show_release = show.clone();
+    keys.connect_key_released(move |_, key, _, _| {
+        if key == gdk::Key::Alt_L || key == gdk::Key::Alt_R {
+            show_release(alt_held());
+        }
+    });
+    popover.set_can_focus(true);
+    popover.add_controller(keys);
 }
 
 fn other_menu(

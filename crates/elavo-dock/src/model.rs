@@ -64,8 +64,9 @@ pub struct Sections<K> {
 /// is most recently used first.
 ///
 /// [`background_service`] is omitted everywhere: no pin, no running icon, no
-/// recent, no minimized tile. `xdg-desktop-portal-gtk` is that list. Its
-/// dialogs belong to whatever application asked for them.
+/// recent, no minimized tile. Portal backends (`xdg-desktop-portal*`,
+/// `*.portal.desktop.*`) are that list. Their dialogs belong to whatever
+/// application asked for them.
 pub fn sections<K: Clone>(
     pins: &[String],
     recent: &[String],
@@ -216,12 +217,14 @@ pub fn place_pin(pins: &mut Vec<String>, id: &str, to: usize) {
     pins.insert(to.min(pins.len()), id.to_owned());
 }
 
-/// `xdg-desktop-portal-gtk` opens file choosers and other dialogs for
+/// xdg-desktop-portal backends open file choosers and other dialogs for
 /// whichever application asked. Those windows are not a dock application,
-/// whether the app id is empty or the desktop file's name.
+/// whether the app id is a binary name, a desktop file id, or an
+/// `org.freedesktop.impl.portal.desktop.*` implementation id.
 pub fn background_service(id: &str) -> bool {
     let id = id.strip_suffix(".desktop").unwrap_or(id);
-    id == "xdg-desktop-portal-gtk"
+    let lower = id.to_ascii_lowercase();
+    lower.contains("xdg-desktop-portal") || lower.contains("portal.desktop")
 }
 
 /// Most recently used first, without duplicates, at most `max` long.
@@ -297,6 +300,10 @@ mod tests {
                 ..window(2, "xdg-desktop-portal-gtk.desktop")
             },
             window(3, "portal-dialog"),
+            window(4, "xdg-desktop-portal-gnome"),
+            window(5, "org.freedesktop.impl.portal.desktop.gtk"),
+            window(6, "org.freedesktop.impl.portal.desktop.gnome"),
+            window(7, "xdg-desktop-portal-wlr"),
         ];
         let pins = vec!["xdg-desktop-portal-gtk.desktop".to_owned()];
         let recent = vec!["xdg-desktop-portal-gtk.desktop".to_owned()];
@@ -312,6 +319,23 @@ mod tests {
         assert!(s.apps.is_empty());
         assert!(s.recents.is_empty());
         assert!(s.minimized.is_empty());
+    }
+
+    #[test]
+    fn background_service_matches_portal_app_ids() {
+        assert!(background_service("xdg-desktop-portal-gtk"));
+        assert!(background_service("xdg-desktop-portal-gtk.desktop"));
+        assert!(background_service("xdg-desktop-portal-gnome"));
+        assert!(background_service("xdg-desktop-portal"));
+        assert!(background_service(
+            "org.freedesktop.impl.portal.desktop.gtk"
+        ));
+        assert!(background_service(
+            "org.freedesktop.impl.portal.desktop.wlr"
+        ));
+        assert!(!background_service("org.mozilla.firefox"));
+        assert!(!background_service("portal-dialog"));
+        assert!(!background_service("some.portal.helper"));
     }
 
     #[test]

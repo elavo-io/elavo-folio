@@ -2,6 +2,7 @@
 //! planning/desktop/dock.md.
 
 mod badges;
+mod drop_focus;
 mod files;
 mod menus;
 mod model;
@@ -12,7 +13,7 @@ mod trash;
 mod view;
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
@@ -58,6 +59,11 @@ pub struct Dock {
     views: RefCell<Vec<(gtk::ApplicationWindow, DockView)>>,
     sections: RefCell<Sections<ObjectId>>,
     launching: RefCell<HashMap<String, Instant>>,
+    /// After a file drop, raise the first new toplevel of this desktop id.
+    focus_after_drop: RefCell<HashMap<String, drop_focus::Watch<String>>>,
+    /// PIDs from dock launches, kept while the app is launching or running so
+    /// Force Quit can find them after the bounce ends.
+    launch_pids: RefCell<HashMap<String, Vec<i32>>>,
     badges: badges::Badges,
     trash: trash::Trash,
     dragging: RefCell<Option<String>>,
@@ -109,6 +115,8 @@ impl Dock {
                 minimized: Vec::new(),
             }),
             launching: RefCell::default(),
+            focus_after_drop: RefCell::default(),
+            launch_pids: RefCell::default(),
             badges: badges::Badges::default(),
             trash: trash::Trash::default(),
             dragging: RefCell::default(),
@@ -203,12 +211,12 @@ impl Dock {
                         .map(|e| e.id.clone()),
                 );
                 let mut list = self.toplevels.borrow_mut();
-                let (was_active, was_minimized) =
+                let (was_active, was_minimized, is_new) =
                     match list.iter_mut().find(|t| t.key == toplevel.key) {
                         Some(existing) => {
                             let was = (existing.activated, existing.minimized);
                             *existing = toplevel.clone();
-                            was
+                            (was.0, was.1, false)
                         }
                         None => {
                             // A new window may belong to an application
@@ -222,7 +230,7 @@ impl Dock {
                             {
                                 self.touch_recent(&toplevel.app_id);
                             }
-                            (false, false)
+                            (false, false, true)
                         }
                     };
                 drop(list);
@@ -239,6 +247,9 @@ impl Dock {
                         .insert(toplevel.key.clone(), n);
                 } else if !toplevel.minimized {
                     self.minimized_at.borrow_mut().remove(&toplevel.key);
+                }
+                if is_new {
+                    self.maybe_focus_after_drop(&toplevel);
                 }
             }
             toplevels::Event::Closed(key) => {
@@ -353,6 +364,16 @@ impl Dock {
                 .collect();
             launching
                 .retain(|id, at| !running.contains(&id.as_str()) && at.elapsed() < LAUNCH_TIMEOUT);
+            drop_focus::expire(&mut self.focus_after_drop.borrow_mut(), Instant::now());
+            let keep: Vec<String> = running
+                .iter()
+                .copied()
+                .map(str::to_owned)
+                .chain(launching.keys().cloned())
+                .collect();
+            self.launch_pids
+                .borrow_mut()
+                .retain(|id, _| keep.iter().any(|k| k == id));
         }
         self.sections.replace(sections);
         let tiles = self.tiles();
@@ -631,9 +652,17 @@ impl Dock {
     /// is brings all its windows forward, the most recently used on top. If
     /// every window is minimized, the most recent one comes back.
     fn activate_app(self: &Rc<Self>, item: &Item<ObjectId>) {
+        if self.windows_of(item).is_empty() {
+            self.launch(item, None);
+            return;
+        }
+        self.raise_app(item);
+    }
+
+    /// Raise the application's windows; most recently used ends up focused.
+    fn raise_app(&self, item: &Item<ObjectId>) {
         let windows = self.windows_of(item);
         let Some(controller) = self.controller.as_ref().filter(|_| !windows.is_empty()) else {
-            self.launch(item, None);
             return;
         };
         let visible: Vec<&Toplevel> = windows.iter().filter(|t| !t.minimized).collect();
@@ -651,14 +680,45 @@ impl Dock {
         }
     }
 
+    /// Focus a toplevel that appeared after a file drop onto its application.
+    fn maybe_focus_after_drop(&self, toplevel: &Toplevel) {
+        let Some(id) = self
+            .index
+            .borrow()
+            .match_app_id(&toplevel.app_id)
+            .map(|e| e.id.clone())
+        else {
+            return;
+        };
+        let key = window_key(&toplevel.key);
+        let focus = {
+            let mut pending = self.focus_after_drop.borrow_mut();
+            drop_focus::take_new_to_focus(&mut pending, &id, &key, Instant::now())
+        };
+        if focus {
+            if let Some(controller) = self.controller() {
+                controller.activate(toplevel);
+            }
+        }
+    }
+
+    pub fn is_launching(&self, id: &str) -> bool {
+        self.launching.borrow().contains_key(id)
+    }
+
     pub fn launch(self: &Rc<Self>, item: &Item<ObjectId>, action: Option<&str>) {
         let Some(entry) = self.entry(item) else {
             return;
         };
-        if action.is_none() && !item.running() && pins::waits_for_a_window(&entry.id) {
-            if self.launching.borrow().contains_key(&entry.id) {
-                return;
-            }
+        let track = action.is_none() && !item.running() && pins::waits_for_a_window(&entry.id);
+        if track && self.launching.borrow().contains_key(&entry.id) {
+            return;
+        }
+        let pids = elavo_common::launch_with_pids(&entry.info, action);
+        if !pids.is_empty() {
+            self.launch_pids.borrow_mut().insert(entry.id.clone(), pids);
+        }
+        if track {
             self.launching
                 .borrow_mut()
                 .insert(entry.id.clone(), Instant::now());
@@ -670,7 +730,86 @@ impl Dock {
             });
             self.refresh();
         }
-        elavo_common::launch(&entry.info, action);
+    }
+
+    /// Open `files` with the application, tracking PIDs for bounce and Force Quit.
+    /// Raises a running app immediately; watches for a new toplevel so the
+    /// window that handles the drop (or a cold-started window) becomes active.
+    /// GdkAppLaunchContext supplies an XDG activation token on launch.
+    pub fn open_files(self: &Rc<Self>, item: &Item<ObjectId>, files: &[gio::File]) {
+        let Some(entry) = self.entry(item) else {
+            return;
+        };
+        let track = !item.running() && pins::waits_for_a_window(&entry.id);
+        if track && self.launching.borrow().contains_key(&entry.id) {
+            return;
+        }
+        let existing: HashSet<String> = self
+            .windows_of(item)
+            .iter()
+            .map(|t| window_key(&t.key))
+            .collect();
+        if item.running() {
+            self.raise_app(item);
+        }
+        self.focus_after_drop.borrow_mut().insert(
+            entry.id.clone(),
+            drop_focus::Watch::new(existing, Instant::now()),
+        );
+        let pids = elavo_common::launch_files_with_pids(&entry.info, files);
+        if !pids.is_empty() {
+            self.launch_pids
+                .borrow_mut()
+                .entry(entry.id.clone())
+                .or_default()
+                .extend(pids);
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(drop_focus::TIMEOUT, move || {
+            if let Some(dock) = weak.upgrade() {
+                drop_focus::expire(&mut dock.focus_after_drop.borrow_mut(), Instant::now());
+                dock.refresh();
+            }
+        });
+        if track {
+            self.launching
+                .borrow_mut()
+                .insert(entry.id.clone(), Instant::now());
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local_once(LAUNCH_TIMEOUT, move || {
+                if let Some(dock) = weak.upgrade() {
+                    dock.refresh();
+                }
+            });
+        }
+        self.refresh();
+    }
+
+    /// SIGKILL the application's process tree and clear any launch bounce.
+    pub fn force_quit(self: &Rc<Self>, item: &Item<ObjectId>) {
+        let entry = self.entry(item);
+        let mut pids = Vec::new();
+        if let Some(id) = item.desktop_id.as_deref() {
+            self.launching.borrow_mut().remove(id);
+            self.focus_after_drop.borrow_mut().remove(id);
+            if let Some(recorded) = self.launch_pids.borrow_mut().remove(id) {
+                pids.extend(recorded);
+            }
+        }
+        if let Some(entry) = entry.as_ref() {
+            pids.extend(bundle_pids(&entry.info));
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        for pid in pids {
+            kill_tree(pid);
+        }
+        if let Some(controller) = self.controller() {
+            for window in self.windows_of(item) {
+                controller.close(&window);
+            }
+        }
+        self.refresh();
     }
 
     /// Super+N: the Nth application, pins first.
@@ -965,6 +1104,16 @@ impl Host for HostRef {
         files::app_opens(&entry.info, files)
     }
 
+    fn opens_mime(&self, key: &str, files: &[gio::File]) -> bool {
+        let Some(dock) = self.rc().filter(|_| !files.is_empty()) else {
+            return false;
+        };
+        let Some(entry) = dock.item(key).and_then(|i| dock.entry(&i)) else {
+            return false;
+        };
+        files::app_opens_mime(&entry.info, files)
+    }
+
     fn accept_drop(&self, intent: Intent, payload: Payload) -> bool {
         let Some(dock) = self.rc() else {
             return false;
@@ -1010,10 +1159,10 @@ impl Host for HostRef {
                 true
             }
             (Intent::OpenWith(key), Payload::Files(files)) => {
-                let Some(entry) = dock.item(&key).and_then(|i| dock.entry(&i)) else {
+                let Some(item) = dock.item(&key) else {
                     return false;
                 };
-                files::open_with(&entry.info, &files);
+                dock.open_files(&item, &files);
                 true
             }
             (Intent::IntoFolder(key), Payload::Files(files)) => {
@@ -1094,6 +1243,72 @@ fn follow_color_scheme() {
         static HELD: RefCell<Option<gio::Settings>> = const { RefCell::new(None) };
     }
     HELD.with(|slot| slot.replace(Some(desktop)));
+}
+
+/// PIDs whose executable or command line sits inside `info`'s `.eapp` bundle.
+/// Plain desktop files are not matched here: shared interpreters would make
+/// that unsafe. Those rely on PIDs recorded at launch.
+fn bundle_pids(info: &gio_unix::DesktopAppInfo) -> Vec<i32> {
+    let Some(bundle) = info.filename().and_then(|path| {
+        path.parent()
+            .filter(|p| p.extension().is_some_and(|e| e == "eapp"))
+            .and_then(|p| std::fs::canonicalize(p).ok())
+    }) else {
+        return Vec::new();
+    };
+    let Ok(proc) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut pids = Vec::new();
+    for entry in proc.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let proc_path = entry.path();
+        let under = std::fs::read_link(proc_path.join("exe"))
+            .ok()
+            .is_some_and(|exe| exe.starts_with(&bundle));
+        // Only argv[0]: a shell or editor that merely names the bundle in
+        // its arguments must not be killed.
+        let mentioned = std::fs::read(proc_path.join("cmdline"))
+            .ok()
+            .and_then(|cmd| cmd.split(|b| *b == 0).next().map(|a| a.to_vec()))
+            .is_some_and(|argv0| {
+                std::path::Path::new(&*String::from_utf8_lossy(&argv0)).starts_with(&bundle)
+            });
+        if under || mentioned {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+fn children_of(pid: i32) -> Vec<i32> {
+    let Ok(proc) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let needle = format!("{pid}");
+    proc.flatten()
+        .filter_map(|entry| {
+            let child = entry.file_name().to_string_lossy().parse::<i32>().ok()?;
+            let ppid = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            // /proc/pid/stat: pid (comm) state ppid ...
+            let close = ppid.rfind(')')?;
+            let mut fields = ppid[close + 1..].split_whitespace();
+            let _state = fields.next()?;
+            let parent = fields.next()?;
+            (parent == needle).then_some(child)
+        })
+        .collect()
+}
+
+fn kill_tree(pid: i32) {
+    for child in children_of(pid) {
+        kill_tree(child);
+    }
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
 }
 
 fn main() -> glib::ExitCode {
