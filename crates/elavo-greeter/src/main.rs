@@ -16,6 +16,7 @@ mod frost;
 mod glass;
 mod greetd;
 mod logind;
+mod nav;
 mod pam;
 mod scale;
 mod screen;

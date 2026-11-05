@@ -68,6 +68,13 @@ pub struct Screen {
     /// starts with nobody chosen when there is more than one account. One
     /// account, and the lock, open already chosen.
     chosen: Cell<bool>,
+    /// Which list row the keyboard (and the pointer) have lit. Enter picks
+    /// this one. Starts on the first account so Enter does not hit the sun.
+    list_focus: Cell<usize>,
+    /// Hover plates for the open list, so arrows can light the same glass
+    /// the pointer does.
+    list_plates: RefCell<Vec<crate::frost::Plate>>,
+    list_rows: RefCell<Vec<gtk::Widget>>,
     status: Rc<Status>,
     views: RefCell<Vec<View>>,
     pictures: RefCell<HashMap<PathBuf, Picture>>,
@@ -366,6 +373,9 @@ impl Screen {
             accounts,
             selected: Cell::new(selected),
             chosen: Cell::new(chosen),
+            list_focus: Cell::new(0),
+            list_plates: RefCell::default(),
+            list_rows: RefCell::default(),
             status: Status::new(kind == Kind::Lock),
             views: RefCell::default(),
             pictures: RefCell::default(),
@@ -443,10 +453,13 @@ impl Screen {
             password.grab_focus();
         });
 
+        // List mode's Escape is handled on the screen (back to the list, or
+        // nothing when there is only one account). Name mode still clears.
         let keys = gtk::EventControllerKey::new();
         let entry = screen.password.clone();
+        let name_mode = show == Show::Name;
         keys.connect_key_pressed(move |_, key, _, _| {
-            if key == gdk::Key::Escape {
+            if name_mode && key == gdk::Key::Escape {
                 entry.set_text("");
                 return glib::Propagation::Stop;
             }
@@ -597,6 +610,8 @@ impl Screen {
                     screen.name.grab_focus();
                 } else if screen.chosen.get() {
                     screen.password.grab_focus();
+                } else {
+                    screen.apply_list_focus();
                 }
             });
         }
@@ -626,6 +641,21 @@ impl Screen {
             .build();
         root.add_overlay(&shade);
         root.add_overlay(&column);
+
+        if primary {
+            // Capture before the sun button so Enter picks a person instead
+            // of opening the power menu.
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let weak = Rc::downgrade(self);
+            keys.connect_key_pressed(move |_, key, _, _| {
+                let Some(screen) = weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                screen.on_list_key(key)
+            });
+            root.add_controller(keys);
+        }
 
         self.views.borrow_mut().push(View {
             picture,
@@ -732,6 +762,8 @@ impl Screen {
         while let Some(child) = self.people.first_child() {
             self.people.remove(&child);
         }
+        self.list_plates.borrow_mut().clear();
+        self.list_rows.borrow_mut().clear();
         if self.chosen.get() && self.selected.get() < self.accounts.len() {
             let column = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
@@ -742,9 +774,14 @@ impl Screen {
             column.append(&self.password_block);
             self.people.append(&column);
         } else {
+            if !self.accounts.is_empty() {
+                let focus = self.list_focus.get().min(self.accounts.len() - 1);
+                self.list_focus.set(focus);
+            }
             for index in 0..self.accounts.len() {
                 self.people.append(&self.person_button(index, false));
             }
+            self.apply_list_focus();
         }
     }
 
@@ -823,10 +860,22 @@ impl Screen {
             button.add_css_class("elavo-greeter-chosen");
         }
         if let Some(plate) = hover {
+            self.list_plates.borrow_mut().push(plate.clone());
             let motion = gtk::EventControllerMotion::new();
-            let entered = plate.clone();
-            motion.connect_enter(move |_, _, _| entered.set_hovered(true));
-            motion.connect_leave(move |_| plate.set_hovered(false));
+            let weak = Rc::downgrade(self);
+            motion.connect_enter(move |_, _, _| {
+                if let Some(screen) = weak.upgrade() {
+                    screen.list_focus.set(index);
+                    screen.apply_list_focus();
+                }
+            });
+            let weak = Rc::downgrade(self);
+            motion.connect_leave(move |_| {
+                if let Some(screen) = weak.upgrade() {
+                    // Keep the keyboard's row lit when the pointer leaves.
+                    screen.apply_list_focus();
+                }
+            });
             button.add_controller(motion);
         }
         let weak = Rc::downgrade(self);
@@ -839,7 +888,13 @@ impl Screen {
                 }
             }
         });
-        button.upcast()
+        let row = button.upcast::<gtk::Widget>();
+        if !back {
+            // So a focused row can scroll into view inside the list.
+            row.set_focusable(true);
+            self.list_rows.borrow_mut().push(row.clone());
+        }
+        row
     }
 
     fn select(self: &Rc<Self>, index: usize) {
@@ -847,6 +902,7 @@ impl Screen {
             return;
         }
         self.selected.set(index);
+        self.list_focus.set(index);
         self.chosen.set(true);
         self.password.set_text("");
         self.message.set_visible(false);
@@ -857,9 +913,63 @@ impl Screen {
 
     fn clear_choice(self: &Rc<Self>) {
         self.chosen.set(false);
+        self.list_focus.set(self.selected.get());
         self.password.set_text("");
         self.message.set_visible(false);
         self.rebuild_people();
+    }
+
+    fn apply_list_focus(&self) {
+        let focus = self.list_focus.get();
+        for (index, plate) in self.list_plates.borrow().iter().enumerate() {
+            plate.set_hovered(index == focus);
+        }
+        if let Some(row) = self.list_rows.borrow().get(focus) {
+            row.grab_focus();
+        }
+    }
+
+    fn on_list_key(self: &Rc<Self>, key: gdk::Key) -> glib::Propagation {
+        if self.show != Show::List {
+            return glib::Propagation::Proceed;
+        }
+        if self.stack.visible_child_name().as_deref() != Some("accounts") {
+            return glib::Propagation::Proceed;
+        }
+        let key = match key {
+            gdk::Key::Up | gdk::Key::KP_Up => crate::nav::ListKey::Up,
+            gdk::Key::Down | gdk::Key::KP_Down => crate::nav::ListKey::Down,
+            gdk::Key::Return | gdk::Key::KP_Enter => crate::nav::ListKey::Enter,
+            gdk::Key::Escape => crate::nav::ListKey::Escape,
+            _ => return glib::Propagation::Proceed,
+        };
+        let Some((focus, action)) = crate::nav::handle(
+            crate::nav::ListNav {
+                count: self.accounts.len(),
+                focus: self.list_focus.get(),
+                chosen: self.chosen.get(),
+                can_leave: self.accounts.len() > 1,
+            },
+            key,
+        ) else {
+            return glib::Propagation::Proceed;
+        };
+        self.list_focus.set(focus);
+        match action {
+            crate::nav::ListAction::Focus(_) => {
+                self.apply_list_focus();
+                glib::Propagation::Stop
+            }
+            crate::nav::ListAction::Select(index) => {
+                self.select(index);
+                glib::Propagation::Stop
+            }
+            crate::nav::ListAction::Back => {
+                self.clear_choice();
+                glib::Propagation::Stop
+            }
+            crate::nav::ListAction::Stay => glib::Propagation::Stop,
+        }
     }
 
     fn ask(&self, action: Power) {

@@ -162,6 +162,16 @@ window.elavo-greeter-window {
   background: none;
 }
 
+/* Keyboard focus uses the same frosted hover plate as the pointer.
+   Hide the stock outline so the row does not get a vague ring. */
+.elavo-greeter-person:focus,
+.elavo-greeter-person:focus-visible {
+  outline: none;
+  border: none;
+  box-shadow: none;
+  background: none;
+}
+
 /* The list row's hover plate. Its glass fades in frost.rs; the picture
    and the name are the plate's child and stay opaque. */
 .elavo-greeter-hover {
