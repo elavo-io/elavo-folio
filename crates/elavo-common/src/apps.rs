@@ -156,7 +156,9 @@ fn bundles() -> Vec<(PathBuf, AppEntry)> {
 
 /// The `.eapp` directory a desktop file's program is in, when something
 /// other than the Applications service wrote it. AppImages such as Patchy
-/// write their own desktop file and icons the first time they run.
+/// write their own desktop file and icons the first time they run. Symlinks
+/// are followed, so an Exec under `~/.local` that points into a bundle still
+/// counts.
 fn runs_from_bundle(info: &DesktopAppInfo) -> Option<PathBuf> {
     if info.string("X-Elavo-Id").is_some() {
         return None;
@@ -169,11 +171,72 @@ fn runs_from_bundle(info: &DesktopAppInfo) -> Option<PathBuf> {
         .map(PathBuf::from);
     let try_exec = info.string("TryExec").map(|s| PathBuf::from(s.as_str()));
     [exec, try_exec].into_iter().flatten().find_map(|program| {
+        let program = std::fs::canonicalize(&program).unwrap_or(program);
         program
             .ancestors()
             .find(|a| a.extension().is_some_and(|e| e == "eapp"))
             .map(Path::to_path_buf)
     })
+}
+
+/// `id` from a bundle's `entry.json`, when present.
+fn entry_json_id(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("entry.json")).ok()?;
+    // Small file: find the top-level `"id": "..."` without pulling in serde.
+    let key = "\"id\"";
+    let rest = text.split(key).nth(1)?;
+    let rest = rest.trim_start();
+    if !rest.starts_with(':') {
+        return None;
+    }
+    let rest = rest[1..].trim_start();
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let rest = &rest[1..];
+    let end = rest.find('"')?;
+    let id = &rest[..end];
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
+/// Drop desktop files that belong to an Applications bundle, and remember
+/// their IDs as aliases of that bundle so pins and windows still resolve.
+///
+/// A stray matches a bundle when its Exec (after following symlinks) lands
+/// inside the bundle, or when its desktop ID is the bundle's `entry.json` id
+/// (the short id AppImages also use for `StartupWMClass` and self-installs).
+fn fold_bundle_duplicates(
+    entries: &mut Vec<AppEntry>,
+    bundles: &[(PathBuf, AppEntry)],
+) -> Vec<(String, String)> {
+    let mut aliases = Vec::new();
+    let mut drop_ids = HashSet::new();
+
+    for (dir, bundle) in bundles {
+        if let Some(jid) = entry_json_id(dir) {
+            let short = format!("{jid}.desktop");
+            if short != bundle.id {
+                aliases.push((short.clone(), bundle.id.clone()));
+                drop_ids.insert(short);
+            }
+        }
+    }
+
+    for e in entries.iter() {
+        let Some(dir) = runs_from_bundle(&e.info) else {
+            continue;
+        };
+        let dir = dir.canonicalize().unwrap_or(dir);
+        if let Some((_, bundle)) = bundles.iter().find(|(d, _)| *d == dir) {
+            aliases.push((e.id.clone(), bundle.id.clone()));
+            drop_ids.insert(e.id.clone());
+        }
+    }
+
+    entries.retain(|e| !drop_ids.contains(&e.id));
+    aliases.sort();
+    aliases.dedup();
+    aliases
 }
 
 /// None for `Hidden=true` and for files that are not applications.
@@ -205,20 +268,10 @@ impl AppIndex {
             }
         }
         let bundles = bundles();
-        // A desktop file an AppImage wrote for itself names the entry it
-        // runs from, so its windows and recents belong to that entry. Once
-        // the entry is gone, so is the application.
-        let mut aliases = Vec::new();
-        entries.retain(|e| {
-            let Some(dir) = runs_from_bundle(&e.info) else {
-                return true;
-            };
-            let dir = dir.canonicalize().ok();
-            if let Some((_, bundle)) = bundles.iter().find(|(d, _)| Some(d) == dir.as_ref()) {
-                aliases.push((e.id.clone(), bundle.id.clone()));
-            }
-            false
-        });
+        // A desktop file an AppImage wrote for itself, or a duplicate that
+        // names the same window class / entry id as a bundle, resolves to
+        // that bundle so pins and icons use the Applications entry.
+        let aliases = fold_bundle_duplicates(&mut entries, &bundles);
         // An entry in an Applications folder carries the icon picked for it
         // there, so its launch.desktop stands in for the application's own.
         for (_, bundle) in bundles {
@@ -248,7 +301,17 @@ impl AppIndex {
     }
 
     pub fn get(&self, id: &str) -> Option<&AppEntry> {
+        let id = self.resolve_id(id);
         self.entries.iter().find(|e| e.id == id)
+    }
+
+    /// Pin or desktop ID after mapping AppImage self-installs onto their
+    /// Applications bundle.
+    fn resolve_id<'a>(&'a self, id: &'a str) -> &'a str {
+        self.aliases
+            .iter()
+            .find(|(alias, _)| alias == id)
+            .map_or(id, |(_, to)| to.as_str())
     }
 
     /// Desktop ID for a window's `app_id`. Shown entries win over hidden ones
@@ -277,11 +340,7 @@ impl AppIndex {
         };
         let id = match_app_id(app_id, &to_candidates(true))
             .or_else(|| match_app_id(app_id, &to_candidates(false)))?;
-        let id = self
-            .aliases
-            .iter()
-            .find(|(alias, _)| alias == id)
-            .map_or(id, |(_, to)| to.as_str());
+        // `get` follows aliases, so a stray id still yields the bundle.
         self.get(id)
     }
 }
@@ -396,6 +455,23 @@ mod tests {
         dir
     }
 
+    fn write_desktop(path: &Path, body: &str) {
+        std::fs::write(path, format!("[Desktop Entry]\nType=Application\n{body}\n")).unwrap();
+    }
+
+    impl AppIndex {
+        fn for_test(mut entries: Vec<AppEntry>, bundles: Vec<(PathBuf, AppEntry)>) -> Self {
+            let aliases = fold_bundle_duplicates(&mut entries, &bundles);
+            for (_, bundle) in bundles {
+                match entries.iter_mut().find(|e| e.id == bundle.id) {
+                    Some(existing) => *existing = bundle,
+                    None => entries.push(bundle),
+                }
+            }
+            Self { entries, aliases }
+        }
+    }
+
     #[test]
     fn a_desktop_file_an_appimage_wrote_for_itself_names_its_entry() {
         let dir = bundle("own");
@@ -417,5 +493,111 @@ mod tests {
         assert_eq!(runs_from_bundle(&export), None);
         assert_eq!(runs_from_bundle(&info("Exec=sh -c true")), None);
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn symlink_exec_into_eapp_still_names_the_bundle() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("elavo-common-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("Grok Bot.eapp");
+        std::fs::create_dir_all(&dir).unwrap();
+        let appimage = dir.join("Grok_Bot.AppImage");
+        std::fs::write(&appimage, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&appimage, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link_dir = root.join("local-share-grok");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("appimage");
+        std::os::unix::fs::symlink(&appimage, &link).unwrap();
+        let own = info(&format!(
+            "Exec={} -- %U\nStartupWMClass=grok-bot",
+            link.display()
+        ));
+        assert_eq!(
+            runs_from_bundle(&own).and_then(|p| p.canonicalize().ok()),
+            dir.canonicalize().ok()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn entry_json_id_reads_the_short_id() {
+        let root = std::env::temp_dir().join(format!("elavo-common-json-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("entry.json"),
+            r#"{
+  "kind": "appimage",
+  "id": "grok-bot",
+  "name": "Grok Bot"
+}"#,
+        )
+        .unwrap();
+        assert_eq!(entry_json_id(&root).as_deref(), Some("grok-bot"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Grok-like: a stray `~/.local` desktop file and an `.eapp` launch.desktop
+    /// share StartupWMClass / the entry.json id; resolution prefers the bundle,
+    /// and a pin of the stray id still finds it.
+    #[test]
+    fn stray_local_and_bundle_resolve_to_the_bundle() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("elavo-common-grok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle_dir = root.join("Applications").join("Grok Bot.eapp");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        let appimage = bundle_dir.join("Grok_Bot.AppImage");
+        std::fs::write(&appimage, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&appimage, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let run = bundle_dir.join("run");
+        std::fs::write(&run, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(bundle_dir.join("standard-icon.png"), b"png").unwrap();
+        std::fs::write(
+            bundle_dir.join("entry.json"),
+            r#"{"kind":"appimage","id":"grok-bot","name":"Grok Bot"}"#,
+        )
+        .unwrap();
+        let launch = bundle_dir.join("launch.desktop");
+        write_desktop(
+            &launch,
+            &format!(
+                "Name=Grok Bot\nExec=\"{}\" --no-sandbox -- %U\nIcon={}/standard-icon.png\nStartupWMClass=grok-bot\nX-Elavo-Id=elavo-appimage-grok-bot\nX-Elavo-Bundle={}",
+                run.display(),
+                bundle_dir.display(),
+                bundle_dir.display()
+            ),
+        );
+        let local = root.join("applications");
+        std::fs::create_dir_all(&local).unwrap();
+        let link_dir = root.join("grok-bot");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("appimage");
+        std::os::unix::fs::symlink(&appimage, &link).unwrap();
+        let stray_path = local.join("grok-bot.desktop");
+        write_desktop(
+            &stray_path,
+            &format!(
+                "Name=Grok Bot\nExec={} -- %U\nIcon=grok-bot\nStartupWMClass=grok-bot",
+                link.display()
+            ),
+        );
+
+        let stray = entry("grok-bot.desktop".into(), &stray_path).unwrap();
+        let bundle = entry("elavo-appimage-grok-bot.desktop".into(), &launch).unwrap();
+        let resolved = bundle_dir.canonicalize().unwrap();
+        let index = AppIndex::for_test(vec![stray], vec![(resolved, bundle)]);
+
+        let matched = index.match_app_id("grok-bot").expect("bundle match");
+        assert_eq!(matched.id, "elavo-appimage-grok-bot.desktop");
+        assert!(matched.icon().is_some());
+        let pinned = index.get("grok-bot.desktop").expect("stray pin");
+        assert_eq!(pinned.id, "elavo-appimage-grok-bot.desktop");
+        assert!(index.get("elavo-appimage-grok-bot.desktop").is_some());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

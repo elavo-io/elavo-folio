@@ -14,6 +14,7 @@ mod view;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
@@ -976,17 +977,58 @@ fn window_key(key: &ObjectId) -> String {
 }
 
 fn app_icon(entry: Option<&AppEntry>, app_id: Option<&str>) -> gio::Icon {
-    if let Some(icon) = entry.and_then(|e| e.icon()) {
-        return icon;
+    let theme = gdk::Display::default().map(|d| gtk::IconTheme::for_display(&d));
+    if let Some(entry) = entry {
+        if let Some(icon) = entry.icon() {
+            if icon_is_usable(&icon, theme.as_ref()) {
+                return icon;
+            }
+        }
+        if let Some(icon) = bundle_standard_icon(entry) {
+            return icon;
+        }
     }
     // Not a fallback list: GTK tries every name in the current theme before
     // the next one, so Adwaita's generic icon would beat an application's
     // own icon in hicolor.
-    let theme = gdk::Display::default().map(|d| gtk::IconTheme::for_display(&d));
     let name = app_id
-        .filter(|id| theme.is_some_and(|t| t.has_icon(id)))
+        .filter(|id| theme.as_ref().is_some_and(|t| t.has_icon(id)))
         .unwrap_or("application-x-executable");
     gio::ThemedIcon::new(name).upcast()
+}
+
+/// True for a file icon whose path exists, or a themed icon the theme knows.
+fn icon_is_usable(icon: &gio::Icon, theme: Option<&gtk::IconTheme>) -> bool {
+    if let Some(file) = icon.downcast_ref::<gio::FileIcon>() {
+        return file.file().path().is_some_and(|p| p.is_file());
+    }
+    if let Ok(themed) = icon.clone().downcast::<gio::ThemedIcon>() {
+        let Some(theme) = theme else {
+            return true;
+        };
+        return themed.names().iter().any(|n| theme.has_icon(n));
+    }
+    true
+}
+
+/// `standard-icon.png` next to a bundle's launch.desktop, when Elavo wrote one.
+fn bundle_standard_icon(entry: &AppEntry) -> Option<gio::Icon> {
+    let dir = bundle_dir(entry)?;
+    let path = dir.join("standard-icon.png");
+    path.is_file()
+        .then(|| gio::FileIcon::new(&gio::File::for_path(path)).upcast())
+}
+
+fn bundle_dir(entry: &AppEntry) -> Option<PathBuf> {
+    if let Some(bundle) = entry.info.string("X-Elavo-Bundle") {
+        return Some(PathBuf::from(bundle.as_str()));
+    }
+    let path = entry.info.filename()?;
+    let parent = path.parent()?;
+    parent
+        .extension()
+        .is_some_and(|e| e == "eapp")
+        .then(|| parent.to_path_buf())
 }
 
 /// What the views hold: a weak handle, so a view never keeps the dock alive.
