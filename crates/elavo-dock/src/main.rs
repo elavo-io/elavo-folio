@@ -1,6 +1,7 @@
 //! The Elavo dock. Spec: elavo-architecture-and-planning-internal,
 //! planning/desktop/dock.md.
 
+mod app_procs;
 mod badges;
 mod drop_focus;
 mod files;
@@ -787,9 +788,17 @@ impl Dock {
     }
 
     /// SIGKILL the application's process tree and clear any launch bounce.
+    /// Processes are found from PIDs recorded at launch, `.eapp` bundles, and
+    /// the systemd app units named after the desktop id, so apps the dock did
+    /// not start (Flatpaks especially) are killed too. Only when none are
+    /// found does it fall back to asking the windows to close.
     pub fn force_quit(self: &Rc<Self>, item: &Item<ObjectId>) {
         let entry = self.entry(item);
         let mut pids = Vec::new();
+        let app_id = item
+            .desktop_id
+            .as_deref()
+            .map(|id| id.strip_suffix(".desktop").unwrap_or(id).to_owned());
         if let Some(id) = item.desktop_id.as_deref() {
             self.launching.borrow_mut().remove(id);
             self.focus_after_drop.borrow_mut().remove(id);
@@ -800,14 +809,39 @@ impl Dock {
         if let Some(entry) = entry.as_ref() {
             pids.extend(bundle_pids(&entry.info));
         }
+        if let Some(app_id) = app_id.as_deref() {
+            pids.extend(app_procs::scan(app_id));
+        }
+        let own = std::process::id() as i32;
+        let uid = unsafe { libc::getuid() };
+        pids.retain(|&pid| pid > 1 && pid != own && owned_by(pid, uid));
         pids.sort_unstable();
         pids.dedup();
-        for pid in pids {
-            kill_tree(pid);
+        let flatpak = app_id.as_deref().filter(|id| {
+            entry.as_ref().is_some_and(|e| e.info.has_key("X-Flatpak")) || is_flatpak(id)
+        });
+        if let Some(id) = flatpak {
+            // Non-blocking; the cgroup kill below covers a failure here.
+            let _ = std::process::Command::new("flatpak")
+                .args(["kill", id])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
         }
-        if let Some(controller) = self.controller() {
-            for window in self.windows_of(item) {
-                controller.close(&window);
+        let found = !pids.is_empty();
+        for pid in pids {
+            kill_tree(pid, own, uid);
+        }
+        if !found && flatpak.is_none() {
+            eprintln!(
+                "elavo-dock: Force Quit found no processes for {}; asking its windows to close",
+                app_id.as_deref().unwrap_or("unknown app")
+            );
+            if let Some(controller) = self.controller() {
+                for window in self.windows_of(item) {
+                    controller.close(&window);
+                }
             }
         }
         self.refresh();
@@ -1288,8 +1322,9 @@ fn follow_color_scheme() {
 }
 
 /// PIDs whose executable or command line sits inside `info`'s `.eapp` bundle.
-/// Plain desktop files are not matched here: shared interpreters would make
-/// that unsafe. Those rely on PIDs recorded at launch.
+/// Plain desktop files are not matched by path here: shared interpreters would
+/// make that unsafe. Those rely on PIDs recorded at launch and on the systemd
+/// app units found by `app_procs::scan`.
 fn bundle_pids(info: &gio_unix::DesktopAppInfo) -> Vec<i32> {
     let Some(bundle) = info.filename().and_then(|path| {
         path.parent()
@@ -1344,9 +1379,33 @@ fn children_of(pid: i32) -> Vec<i32> {
         .collect()
 }
 
-fn kill_tree(pid: i32) {
+/// Whether `/proc/<pid>` belongs to `uid`.
+fn owned_by(pid: i32, uid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(format!("/proc/{pid}")).is_ok_and(|m| m.uid() == uid)
+}
+
+/// Whether `id` is an installed Flatpak app.
+fn is_flatpak(id: &str) -> bool {
+    std::process::Command::new("flatpak")
+        .args(["list", "--app", "--columns=application"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|l| l.trim() == id)
+        })
+}
+
+/// SIGKILL `pid` and its descendants, skipping PID 1, the dock itself, and
+/// anything not owned by `uid`.
+fn kill_tree(pid: i32, own: i32, uid: u32) {
+    if pid <= 1 || pid == own || !owned_by(pid, uid) {
+        return;
+    }
     for child in children_of(pid) {
-        kill_tree(child);
+        kill_tree(child, own, uid);
     }
     unsafe {
         libc::kill(pid, libc::SIGKILL);
