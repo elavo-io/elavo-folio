@@ -35,6 +35,52 @@ const LIST_HEIGHT: i32 = 320;
 const LIST_WIDTH: i32 = 300;
 const INTERFACE: &str = "org.gnome.desktop.interface";
 
+/// A rectangle in pixels: x, y, width, height.
+pub type Rect = (i32, i32, i32, i32);
+
+/// Where each output's view sits inside the login window.
+///
+/// Cage sizes that one window to the bounding box of every output. One
+/// monitor, or rectangles that do not tile the window, fills the window.
+/// Otherwise each monitor is shifted so the group starts at the window's
+/// origin, in the same order, and the first keeps the account.
+pub fn view_places(window_width: i32, window_height: i32, monitors: &[Rect]) -> Vec<Rect> {
+    if window_width <= 0 || window_height <= 0 {
+        return Vec::new();
+    }
+    let fill = vec![(0, 0, window_width, window_height)];
+    if monitors.len() <= 1 {
+        return fill;
+    }
+    let min_x = monitors.iter().map(|m| m.0).min().unwrap_or(0);
+    let min_y = monitors.iter().map(|m| m.1).min().unwrap_or(0);
+    let shifted: Vec<Rect> = monitors
+        .iter()
+        .map(|(x, y, w, h)| (x - min_x, y - min_y, *w, *h))
+        .collect();
+    if tiles(window_width, window_height, &shifted) {
+        shifted
+    } else {
+        fill
+    }
+}
+
+fn tiles(window_width: i32, window_height: i32, rects: &[Rect]) -> bool {
+    let mut area: i64 = 0;
+    for (x, y, w, h) in rects {
+        if *w <= 0 || *h <= 0 || *x < 0 || *y < 0 {
+            return false;
+        }
+        let right = i64::from(*x) + i64::from(*w);
+        let bottom = i64::from(*y) + i64::from(*h);
+        if right > i64::from(window_width) || bottom > i64::from(window_height) {
+            return false;
+        }
+        area += i64::from(*w) * i64::from(*h);
+    }
+    area == i64::from(window_width) * i64::from(window_height)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Login,
@@ -543,6 +589,14 @@ impl Screen {
                 view.date.set_label(&date);
             }
         }
+    }
+
+    /// Drop the views so they can be built again. The account stack stays.
+    pub fn release_views(&self) {
+        if self.stack.parent().is_some() {
+            self.stack.unparent();
+        }
+        self.views.borrow_mut().clear();
     }
 
     /// The content for one output. The first one asked for holds the
@@ -1092,5 +1146,47 @@ impl Screen {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::view_places;
+
+    #[test]
+    fn one_monitor_fills_the_window() {
+        assert_eq!(
+            view_places(1920, 1080, &[(100, 50, 800, 600)]),
+            vec![(0, 0, 1920, 1080)]
+        );
+        assert_eq!(view_places(1920, 1080, &[]), vec![(0, 0, 1920, 1080)]);
+    }
+
+    #[test]
+    fn side_by_side_monitors_keep_their_order() {
+        let monitors = [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)];
+        assert_eq!(view_places(3840, 1080, &monitors), monitors);
+    }
+
+    #[test]
+    fn a_shifted_pair_starts_at_the_window_origin() {
+        let monitors = [(100, 40, 1920, 1080), (2020, 40, 1280, 1080)];
+        assert_eq!(
+            view_places(3200, 1080, &monitors),
+            vec![(0, 0, 1920, 1080), (1920, 0, 1280, 1080)]
+        );
+    }
+
+    #[test]
+    fn a_gap_or_overlap_fills_the_window() {
+        let gap = [(0, 0, 1920, 1080), (2000, 0, 1920, 1080)];
+        assert_eq!(view_places(4000, 1080, &gap), vec![(0, 0, 4000, 1080)]);
+        let overlap = [(0, 0, 1920, 1080), (1000, 0, 1920, 1080)];
+        assert_eq!(view_places(2920, 1080, &overlap), vec![(0, 0, 2920, 1080)]);
+    }
+
+    #[test]
+    fn an_unsized_window_has_no_place() {
+        assert!(view_places(0, 1080, &[(0, 0, 1920, 1080)]).is_empty());
     }
 }

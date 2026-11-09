@@ -258,6 +258,122 @@ fn run_lock(app: &gtk::Application, backend: Backend) {
     std::mem::forget(instance);
 }
 
+fn monitor_list(display: &gdk::Display) -> Vec<gdk::Monitor> {
+    let model = display.monitors();
+    (0..model.n_items())
+        .filter_map(|i| model.item(i).and_downcast::<gdk::Monitor>())
+        .collect()
+}
+
+fn monitor_rects(monitors: &[gdk::Monitor]) -> Vec<screen::Rect> {
+    monitors
+        .iter()
+        .map(|monitor| {
+            let geometry = monitor.geometry();
+            (
+                geometry.x(),
+                geometry.y(),
+                geometry.width(),
+                geometry.height(),
+            )
+        })
+        .collect()
+}
+
+/// Put `view` in the rectangle `(x, y, w, h)` of a window `window_w` by `window_h`.
+fn place_view(
+    board: &gtk::Overlay,
+    view: &gtk::Widget,
+    window_w: i32,
+    window_h: i32,
+    place: screen::Rect,
+) {
+    let (x, y, w, h) = place;
+    view.set_hexpand(true);
+    view.set_vexpand(true);
+    view.set_halign(gtk::Align::Fill);
+    view.set_valign(gtk::Align::Fill);
+    view.set_margin_start(x);
+    view.set_margin_end((window_w - x - w).max(0));
+    view.set_margin_top(y);
+    view.set_margin_bottom((window_h - y - h).max(0));
+    board.add_overlay(view);
+}
+
+fn clear_views(board: &gtk::Overlay) {
+    let mut child = board.first_child();
+    let mut doomed = Vec::new();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        doomed.push(widget);
+    }
+    for widget in doomed {
+        board.remove_overlay(&widget);
+    }
+}
+
+/// One view per output inside the single login window. The account stays on
+/// the first. A size that is not tiled by the outputs gets one view.
+fn place_views(screen: &Rc<Screen>, board: &gtk::Overlay, display: &gdk::Display) {
+    let width = board.width();
+    let height = board.height();
+    let monitors = monitor_list(display);
+    let places = screen::view_places(width, height, &monitor_rects(&monitors));
+    if places.is_empty() {
+        return;
+    }
+    screen.release_views();
+    clear_views(board);
+    if places.len() == monitors.len() {
+        for (monitor, place) in monitors.iter().zip(places) {
+            place_view(board, &screen.view(Some(monitor)), width, height, place);
+        }
+    } else {
+        let place = places[0];
+        place_view(board, &screen.view(monitors.first()), width, height, place);
+    }
+}
+
+fn watch_output(monitor: &gdk::Monitor, generation: &Rc<std::cell::Cell<u64>>) {
+    if unsafe { monitor.data::<bool>("elavo-greeter-output") }.is_some() {
+        return;
+    }
+    unsafe { monitor.set_data("elavo-greeter-output", true) };
+    let generation = generation.clone();
+    monitor.connect_notify_local(Some("geometry"), move |_, _| {
+        generation.set(generation.get().wrapping_add(1));
+    });
+}
+
+fn watch_outputs(screen: &Rc<Screen>, board: &gtk::Overlay, display: &gdk::Display) {
+    let generation = Rc::new(std::cell::Cell::new(0u64));
+    let seen = Rc::new(std::cell::Cell::new((-1i32, -1i32, u64::MAX)));
+    for monitor in monitor_list(display) {
+        watch_output(&monitor, &generation);
+    }
+    let generation_for_items = generation.clone();
+    display
+        .monitors()
+        .connect_items_changed(move |model, position, _removed, added| {
+            generation_for_items.set(generation_for_items.get().wrapping_add(1));
+            for index in position..position + added {
+                if let Some(monitor) = model.item(index).and_downcast::<gdk::Monitor>() {
+                    watch_output(&monitor, &generation_for_items);
+                }
+            }
+        });
+    let screen = screen.clone();
+    let display = display.clone();
+    board.add_tick_callback(move |board, _| {
+        let stamp = (board.width(), board.height(), generation.get());
+        if stamp != seen.get() {
+            seen.set(stamp);
+            place_views(&screen, board, &display);
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 fn run_window(
     app: &gtk::Application,
     kind: Kind,
@@ -273,7 +389,6 @@ fn run_window(
     screen.preload(first_monitor_aspect());
     warm_up_renderer();
     let display = gdk::Display::default().expect("no display");
-    let monitor = display.monitors().item(0).and_downcast::<gdk::Monitor>();
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title(match (kind, backend, demo_people) {
@@ -287,7 +402,20 @@ fn run_window(
         .default_height(800)
         .css_classes(["elavo-greeter-window"])
         .build();
-    window.set_child(Some(&screen.view(monitor.as_ref())));
+    if backend == Backend::Demo {
+        let monitor = display.monitors().item(0).and_downcast::<gdk::Monitor>();
+        window.set_child(Some(&screen.view(monitor.as_ref())));
+    } else {
+        // Cage gives this one window the bounding box of every output.
+        // Each output gets a view inside it. A second toplevel would be
+        // stretched the same way, and destroying one crashes GTK 4.22.5.
+        let board = gtk::Overlay::new();
+        board.set_hexpand(true);
+        board.set_vexpand(true);
+        window.set_child(Some(&board));
+        place_views(&screen, &board, &display);
+        watch_outputs(&screen, &board, &display);
+    }
     if backend != Backend::Demo {
         window.fullscreen();
     }
