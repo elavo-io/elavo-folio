@@ -277,6 +277,7 @@ impl Confirm {
             .downcast::<gtk::Button>()
             .expect("dialog buttons are buttons");
         dialog.set_default_response(gtk::ResponseType::Accept);
+        left_align_text(&dialog);
 
         let then: Pending = Rc::default();
         let pending = Rc::clone(&then);
@@ -293,6 +294,30 @@ impl Confirm {
             accept,
             then,
         }
+    }
+}
+
+/// Left-align the title and body text, which GTK centers in a message dialog.
+#[allow(deprecated)]
+fn left_align_text(dialog: &gtk::MessageDialog) {
+    let area = dialog.message_area();
+    let mut widget = Some(area.clone().upcast::<gtk::Widget>());
+    while let Some(current) = widget {
+        if current == *dialog.upcast_ref::<gtk::Widget>() {
+            break;
+        }
+        current.set_halign(gtk::Align::Fill);
+        current.set_hexpand(true);
+        widget = current.parent();
+    }
+    let mut child = area.first_child();
+    while let Some(current) = child {
+        if let Some(label) = current.downcast_ref::<gtk::Label>() {
+            label.set_halign(gtk::Align::Start);
+            label.set_xalign(0.0);
+            label.set_justify(gtk::Justification::Left);
+        }
+        child = current.next_sibling();
     }
 }
 
