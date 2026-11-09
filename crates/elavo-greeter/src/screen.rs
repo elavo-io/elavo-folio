@@ -41,16 +41,18 @@ pub type Rect = (i32, i32, i32, i32);
 /// Where each output's view sits inside the login window.
 ///
 /// Cage sizes that one window to the bounding box of every output. One
-/// monitor, or rectangles that do not tile the window, fills the window.
-/// Otherwise each monitor is shifted so the group starts at the window's
-/// origin, in the same order, and the first keeps the account.
+/// monitor fills the window. Several monitors are shifted so the group
+/// starts at the window's origin, in the same order, and the first keeps
+/// the account. A shorter screen beside a taller one leaves a gap in the
+/// box; that gap is not on a monitor, so each screen still gets its own
+/// view. An empty result means the window is not large enough for the
+/// rectangles yet, and the caller keeps the layout it already drew.
 pub fn view_places(window_width: i32, window_height: i32, monitors: &[Rect]) -> Vec<Rect> {
     if window_width <= 0 || window_height <= 0 {
         return Vec::new();
     }
-    let fill = vec![(0, 0, window_width, window_height)];
     if monitors.len() <= 1 {
-        return fill;
+        return vec![(0, 0, window_width, window_height)];
     }
     let min_x = monitors.iter().map(|m| m.0).min().unwrap_or(0);
     let min_y = monitors.iter().map(|m| m.1).min().unwrap_or(0);
@@ -58,27 +60,17 @@ pub fn view_places(window_width: i32, window_height: i32, monitors: &[Rect]) -> 
         .iter()
         .map(|(x, y, w, h)| (x - min_x, y - min_y, *w, *h))
         .collect();
-    if tiles(window_width, window_height, &shifted) {
+    let fits = shifted.iter().all(|(x, y, w, h)| {
+        *w > 0
+            && *h > 0
+            && i64::from(*x) + i64::from(*w) <= i64::from(window_width)
+            && i64::from(*y) + i64::from(*h) <= i64::from(window_height)
+    });
+    if fits {
         shifted
     } else {
-        fill
+        Vec::new()
     }
-}
-
-fn tiles(window_width: i32, window_height: i32, rects: &[Rect]) -> bool {
-    let mut area: i64 = 0;
-    for (x, y, w, h) in rects {
-        if *w <= 0 || *h <= 0 || *x < 0 || *y < 0 {
-            return false;
-        }
-        let right = i64::from(*x) + i64::from(*w);
-        let bottom = i64::from(*y) + i64::from(*h);
-        if right > i64::from(window_width) || bottom > i64::from(window_height) {
-            return false;
-        }
-        area += i64::from(*w) * i64::from(*h);
-    }
-    area == i64::from(window_width) * i64::from(window_height)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1178,11 +1170,15 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_or_overlap_fills_the_window() {
-        let gap = [(0, 0, 1920, 1080), (2000, 0, 1920, 1080)];
-        assert_eq!(view_places(4000, 1080, &gap), vec![(0, 0, 4000, 1080)]);
-        let overlap = [(0, 0, 1920, 1080), (1000, 0, 1920, 1080)];
-        assert_eq!(view_places(2920, 1080, &overlap), vec![(0, 0, 2920, 1080)]);
+    fn different_heights_keep_a_view_per_screen() {
+        let monitors = [(0, 0, 1920, 1200), (1920, 0, 2560, 1440)];
+        assert_eq!(view_places(4480, 1440, &monitors), monitors);
+    }
+
+    #[test]
+    fn a_window_too_small_for_the_new_screen_waits() {
+        let monitors = [(0, 0, 1920, 1200), (1920, 0, 2560, 1440)];
+        assert!(view_places(1920, 1200, &monitors).is_empty());
     }
 
     #[test]

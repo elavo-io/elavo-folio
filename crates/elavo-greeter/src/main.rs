@@ -313,7 +313,7 @@ fn clear_views(board: &gtk::Overlay) {
 }
 
 /// One view per output inside the single login window. The account stays on
-/// the first. A size that is not tiled by the outputs gets one view.
+/// the first. A window that cannot hold every output yet keeps its layout.
 fn place_views(screen: &Rc<Screen>, board: &gtk::Overlay, display: &gdk::Display) {
     let width = board.width();
     let height = board.height();
