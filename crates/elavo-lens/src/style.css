@@ -135,3 +135,21 @@ window.elavo-lens {
 .elavo-lens-grid label {
   font-size: 11px;
 }
+
+/* Fade the pill row's edge while more pills are hidden that way, so it reads
+   as a row that scrolls. */
+.elavo-lens-pill-scroller undershoot.left,
+.elavo-lens-pill-scroller undershoot.right {
+  background-repeat: no-repeat;
+  background-size: 36px 100%;
+}
+
+.elavo-lens-pill-scroller undershoot.left {
+  background-image: linear-gradient(to right, alpha(@theme_bg_color, 0.96), alpha(@theme_bg_color, 0));
+  background-position: left center;
+}
+
+.elavo-lens-pill-scroller undershoot.right {
+  background-image: linear-gradient(to left, alpha(@theme_bg_color, 0.96), alpha(@theme_bg_color, 0));
+  background-position: right center;
+}

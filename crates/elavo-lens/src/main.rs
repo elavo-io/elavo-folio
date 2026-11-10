@@ -24,6 +24,10 @@ const LIST_HEIGHT: i32 = 360;
 const GRID_HEIGHT: i32 = 330;
 /// Keeps a dragged Lens this far inside the screen edges.
 const EDGE: f64 = 8.0;
+/// The bar with its tallest results open (the Applications grid and its
+/// pills), measured at 1366x768. Lens keeps this much on screen wherever it
+/// is dragged, so the results never open past the bottom edge.
+const PANEL_HEIGHT: f64 = 430.0;
 /// Corner radii of the bar and the results card, matched by style.css.
 const BAR_RADIUS: i32 = 22;
 const RESULTS_RADIUS: i32 = 18;
@@ -64,11 +68,65 @@ fn default_origin(screen_w: f64, screen_h: f64) -> (f64, f64) {
     )
 }
 
-/// Keep the bar on screen: `x`, `y` are the column's top-left corner.
-fn clamp_origin(x: f64, y: f64, screen_w: f64, screen_h: f64, bar_h: f64) -> (f64, f64) {
+/// Keep the panel on screen: `x`, `y` are the column's top-left corner and
+/// `panel_h` how tall it can grow.
+fn clamp_origin(x: f64, y: f64, screen_w: f64, screen_h: f64, panel_h: f64) -> (f64, f64) {
     let max_x = (screen_w - f64::from(WIDTH) - EDGE).max(EDGE);
-    let max_y = (screen_h - bar_h - EDGE).max(EDGE);
+    let max_y = (screen_h - panel_h - EDGE).max(EDGE);
     (x.clamp(EDGE, max_x), y.clamp(EDGE, max_y))
+}
+
+/// `$XDG_STATE_HOME/elavo/lens-position`: where the person last dragged
+/// Lens, as the bar's center across and its top down, each a fraction of the
+/// screen, so it lands in the same spot on any screen size. No file means
+/// the default spot.
+fn position_path() -> std::path::PathBuf {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| glib::home_dir().join(".local/state"));
+    state.join("elavo").join("lens-position")
+}
+
+fn parse_position(text: &str) -> Option<(f64, f64)> {
+    let mut parts = text.split_whitespace().map(str::parse::<f64>);
+    let (fx, fy) = (parts.next()?.ok()?, parts.next()?.ok()?);
+    let ok = |v: f64| v.is_finite() && (0.0..=1.0).contains(&v);
+    (ok(fx) && ok(fy)).then_some((fx, fy))
+}
+
+fn load_position() -> Option<(f64, f64)> {
+    parse_position(&std::fs::read_to_string(position_path()).ok()?)
+}
+
+/// Save where Lens is, or forget it when `None`. Failing to save only means
+/// Lens opens in the default spot next time.
+fn save_position(position: Option<(f64, f64)>) {
+    let path = position_path();
+    match position {
+        Some((fx, fy)) => {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, format!("{fx:.4} {fy:.4}\n"));
+        }
+        None => {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// The column's top-left corner for a saved position on this screen.
+fn origin_from_position((fx, fy): (f64, f64), screen_w: f64, screen_h: f64) -> (f64, f64) {
+    (fx * screen_w - f64::from(WIDTH) / 2.0, fy * screen_h)
+}
+
+/// The saved position for the column's top-left corner on this screen.
+fn position_from_origin((x, y): (f64, f64), screen_w: f64, screen_h: f64) -> (f64, f64) {
+    (
+        ((x + f64::from(WIDTH) / 2.0) / screen_w).clamp(0.0, 1.0),
+        (y / screen_h).clamp(0.0, 1.0),
+    )
 }
 
 /// `org.gnome.desktop.interface` `color-scheme`. Only `prefer-dark` is dark.
@@ -151,6 +209,9 @@ struct Lens {
     /// How far the column has been dragged from where it starts.
     offset: Cell<(f64, f64)>,
     drag_start: Cell<(f64, f64)>,
+    /// A saved position still to be turned into an offset, once the
+    /// screen size is known.
+    saved_position: Cell<Option<(f64, f64)>>,
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
     grid: gtk::FlowBox,
@@ -247,6 +308,7 @@ impl Lens {
             .spacing(6)
             .build();
         let pill_scroller = gtk::ScrolledWindow::builder()
+            .css_classes(["elavo-lens-pill-scroller"])
             .hscrollbar_policy(gtk::PolicyType::External)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .child(&pills)
@@ -290,6 +352,7 @@ impl Lens {
             category: RefCell::new(None),
             offset: Cell::new((0.0, 0.0)),
             drag_start: Cell::new((0.0, 0.0)),
+            saved_position: Cell::new(load_position()),
             list,
             list_scroller,
             grid,
@@ -478,6 +541,17 @@ impl Lens {
                 s.place();
             }
         });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_end(move |_, _, _| {
+            let Some(s) = weak.upgrade() else {
+                return;
+            };
+            // A press on the field or button, or a click, moved nothing.
+            if s.offset.get() == s.drag_start.get() {
+                return;
+            }
+            s.remember_position();
+        });
         self.bar.add_controller(drag);
 
         let reset = gtk::GestureClick::new();
@@ -486,7 +560,9 @@ impl Lens {
             if presses == 2 {
                 if let Some(s) = weak.upgrade() {
                     s.offset.set((0.0, 0.0));
+                    s.saved_position.set(None);
                     s.place();
+                    save_position(None);
                 }
             }
         });
@@ -504,13 +580,31 @@ impl Lens {
         if w <= 0.0 || h <= 0.0 {
             return;
         }
-        let (dx, dy) = self.offset.get();
         let (x0, y0) = default_origin(w, h);
-        let bar_h = f64::from(self.bar.height().max(1));
-        let (x, y) = clamp_origin(x0 + dx, y0 + dy, w, h, bar_h);
+        if let Some(saved) = self.saved_position.take() {
+            let (x, y) = origin_from_position(saved, w, h);
+            self.offset.set((x - x0, y - y0));
+        }
+        let (dx, dy) = self.offset.get();
+        let panel_h = PANEL_HEIGHT.max(f64::from(self.column.height()));
+        let (x, y) = clamp_origin(x0 + dx, y0 + dy, w, h, panel_h);
         self.offset.set((x - x0, y - y0));
         self.column.set_margin_start(x.round() as i32);
         self.column.set_margin_top(y.round() as i32);
+    }
+
+    /// Save where the column is now, so Lens opens there next time.
+    fn remember_position(&self) {
+        let Some(root) = self.window.child() else {
+            return;
+        };
+        let (w, h) = (f64::from(root.width()), f64::from(root.height()));
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let (x0, y0) = default_origin(w, h);
+        let (dx, dy) = self.offset.get();
+        save_position(Some(position_from_origin((x0 + dx, y0 + dy), w, h)));
     }
 
     /// One pill for All and one for each category that has applications.
@@ -988,12 +1082,32 @@ mod tests {
     }
 
     #[test]
-    fn a_drag_keeps_the_bar_on_screen() {
-        let bar = 44.0;
+    fn a_drag_keeps_the_panel_on_screen() {
+        let bar = PANEL_HEIGHT;
         assert_eq!(clamp_origin(-500.0, -500.0, 1366.0, 768.0, bar), (EDGE, EDGE));
         let (x, y) = clamp_origin(5000.0, 5000.0, 1366.0, 768.0, bar);
         assert_eq!(x, 1366.0 - f64::from(WIDTH) - EDGE);
         assert_eq!(y, 768.0 - bar - EDGE);
+    }
+
+    #[test]
+    fn a_saved_position_lands_in_the_same_spot_on_any_screen() {
+        let origin = (300.0, 120.0);
+        let saved = position_from_origin(origin, 1366.0, 768.0);
+        let back = origin_from_position(saved, 1366.0, 768.0);
+        assert!((back.0 - origin.0).abs() < 1e-9 && (back.1 - origin.1).abs() < 1e-9);
+        let big = origin_from_position(saved, 2732.0, 1536.0);
+        assert!((big.0 + f64::from(WIDTH) / 2.0 - 2.0 * (origin.0 + f64::from(WIDTH) / 2.0)).abs() < 1e-9);
+        assert!((big.1 - 240.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn only_a_sound_position_file_is_used() {
+        assert_eq!(parse_position("0.5000 0.2000\n"), Some((0.5, 0.2)));
+        assert_eq!(parse_position("0.5"), None);
+        assert_eq!(parse_position("1.5 0.2"), None);
+        assert_eq!(parse_position("NaN 0.2"), None);
+        assert_eq!(parse_position(""), None);
     }
 
     #[test]
