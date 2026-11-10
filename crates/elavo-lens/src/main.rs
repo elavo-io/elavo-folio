@@ -4,7 +4,11 @@
 //! Spec: elavo-architecture-and-planning-internal, planning/desktop/lens.md.
 
 mod calc;
+mod file_search;
+mod menu;
 mod pages;
+mod units;
+mod usage;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
@@ -21,6 +25,7 @@ const STYLE: &str = include_str!("style.css");
 const WIDTH: i32 = 560;
 const MAX_APPLICATIONS: usize = 8;
 const MAX_PAGES: usize = 4;
+const MAX_FILES: usize = 4;
 const GRID_ICON: i32 = 44;
 const GRID_COLUMNS: u32 = 7;
 const LIST_HEIGHT: i32 = 360;
@@ -33,7 +38,9 @@ const EDGE: f64 = 8.0;
 const PANEL_HEIGHT: f64 = 430.0;
 
 /// The App Launcher opens Lens itself, so Lens does not list it.
-const LAUNCHER: &str = "io.elavo.AppLauncher.desktop";
+const LAUNCHER: &str = elavo_common::pins::LAUNCHER;
+/// Where an application installed from App Bay is updated or removed.
+const APP_BAY: &str = "io.elavo.AppBay.desktop";
 /// Corner radii of the bar and the results card, matched by style.css.
 const BAR_RADIUS: i32 = 22;
 const RESULTS_RADIUS: i32 = 18;
@@ -87,11 +94,29 @@ fn clamp_origin(x: f64, y: f64, screen_w: f64, screen_h: f64, panel_h: f64) -> (
 /// screen, so it lands in the same spot on any screen size. No file means
 /// the default spot.
 fn position_path() -> std::path::PathBuf {
-    let state = std::env::var_os("XDG_STATE_HOME")
+    state_dir().join("lens-position")
+}
+
+/// `$XDG_STATE_HOME/elavo`, where Lens keeps what it remembers.
+fn state_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| glib::home_dir().join(".local/state"));
-    state.join("elavo").join("lens-position")
+        .unwrap_or_else(|| glib::home_dir().join(".local/state"))
+        .join("elavo")
+}
+
+/// `$XDG_STATE_HOME/elavo/lens-usage`: which applications were opened from
+/// Lens, how often, and when. See [`usage`].
+fn usage_path() -> std::path::PathBuf {
+    state_dir().join("lens-usage")
+}
+
+/// Now, in Unix seconds.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn parse_position(text: &str) -> Option<(f64, f64)> {
@@ -177,6 +202,10 @@ enum Action {
     Copy(String),
     /// A System Settings page, by its `--pane` ID.
     OpenPage(String),
+    /// A file or folder, in its default application.
+    OpenFile(std::path::PathBuf),
+    /// One of the application's desktop actions, such as New Window.
+    LaunchWith(AppEntry, String),
 }
 
 /// What System Settings' Lens pane chose in `elavo/lens.conf`: the
@@ -228,6 +257,8 @@ struct Lens {
     list_scroller: gtk::ScrolledWindow,
     grid: gtk::FlowBox,
     grid_scroller: gtk::ScrolledWindow,
+    /// Launch history, read each time Lens opens.
+    usage: RefCell<usage::Usage>,
     apps: RefCell<Vec<AppEntry>>,
     /// Action for each list row, by row index. Headings have none.
     actions: RefCell<Vec<Option<Action>>>,
@@ -235,6 +266,18 @@ struct Lens {
     dragging: Cell<bool>,
     /// System Settings pages, refreshed each time Lens opens.
     pages: RefCell<Vec<pages::Page>>,
+    /// The menu on an application, while it is open.
+    menu: RefCell<Option<gtk::Popover>>,
+    /// Recently used files, read when files are first searched after Lens
+    /// opens.
+    recent_files: RefCell<Vec<file_search::FileEntry>>,
+    /// What the file scan found since Lens opened. Empty until it is done.
+    scanned_files: RefCell<Rc<Vec<file_search::FileEntry>>>,
+    /// The file scan has started since Lens opened.
+    scan_started: Cell<bool>,
+    /// Counts the times Lens opened, so a scan from an earlier time is
+    /// thrown away.
+    scan_serial: Cell<u32>,
     me: Weak<Lens>,
 }
 
@@ -373,10 +416,16 @@ impl Lens {
             list_scroller,
             grid,
             grid_scroller,
+            usage: RefCell::default(),
             apps: RefCell::default(),
             actions: RefCell::default(),
             dragging: Cell::new(false),
             pages: RefCell::default(),
+            menu: RefCell::new(None),
+            recent_files: RefCell::default(),
+            scanned_files: RefCell::default(),
+            scan_started: Cell::new(false),
+            scan_serial: Cell::new(0),
         });
         lens.connect(&root);
         lens.connect_move(&root);
@@ -518,6 +567,10 @@ impl Lens {
             let (Some(s), Some(root)) = (weak.upgrade(), root_ref.upgrade()) else {
                 return;
             };
+            // A click beside an open menu only closes the menu.
+            if s.menu.borrow().is_some() {
+                return;
+            }
             let inside = s
                 .column
                 .compute_bounds(&root)
@@ -681,8 +734,21 @@ impl Lens {
     }
 
     fn on_key(&self, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+        // An open menu takes the arrows, Return, and Escape, which closes
+        // only the menu.
+        if self.menu.borrow().is_some() {
+            return glib::Propagation::Proceed;
+        }
         let apps_mode = self.apps_button.is_active();
         match key {
+            gdk::Key::Menu => {
+                self.open_menu_on_selection();
+                glib::Propagation::Stop
+            }
+            gdk::Key::F10 if modifiers.contains(gdk::ModifierType::SHIFT_MASK) => {
+                self.open_menu_on_selection();
+                glib::Propagation::Stop
+            }
             gdk::Key::Escape => {
                 if !self.entry.text().is_empty() {
                     self.entry.set_text("");
@@ -701,7 +767,14 @@ impl Lens {
                 self.move_selection(if key == gdk::Key::Down { 1 } else { -1 });
                 glib::Propagation::Stop
             }
-            gdk::Key::Down if apps_mode && self.entry.has_focus() => {
+            // The field's text, not the field, holds the focus.
+            gdk::Key::Down
+                if apps_mode
+                    && self
+                        .entry
+                        .state_flags()
+                        .contains(gtk::StateFlags::FOCUS_WITHIN) =>
+            {
                 if let Some(child) = self.first_visible_grid_child() {
                     self.grid.select_child(&child);
                     child.grab_focus();
@@ -712,6 +785,7 @@ impl Lens {
         }
     }
 
+    /// The application on a tile of the grid.
     fn grid_app(&self, child: &gtk::FlowBoxChild) -> Option<AppEntry> {
         let id = child.child()?.widget_name();
         self.apps
@@ -747,6 +821,7 @@ impl Lens {
                 .build();
             tile.append(&app_image(app, GRID_ICON));
             tile.add_controller(self.drag_source(app));
+            self.add_menu_gestures(&tile, app);
             tile.append(
                 &gtk::Label::builder()
                     .label(app.name.as_str())
@@ -757,6 +832,22 @@ impl Lens {
             );
             self.grid.append(&tile);
         }
+    }
+
+    /// The installed application opened most often from Lens.
+    fn most_launched(&self) -> Option<AppEntry> {
+        let apps = self.apps.borrow();
+        let usage = self.usage.borrow();
+        let id = usage.most_launched(|id| apps.iter().any(|a| a.id == id))?;
+        apps.iter().find(|a| a.id == id).cloned()
+    }
+
+    /// Remember that `app` was opened from Lens. Failing to save only means
+    /// this launch is not remembered.
+    fn record_launch(&self, app: &AppEntry) {
+        let mut usage = self.usage.borrow_mut();
+        usage.record(&app.id, unix_now());
+        let _ = usage.save(&usage_path());
     }
 
     fn heading(&self, text: &str) {
@@ -809,7 +900,76 @@ impl Lens {
         );
         if let Some(row) = self.list.last_child() {
             row.add_controller(self.drag_source(app));
+            self.add_menu_gestures(&row, app);
         }
+    }
+
+    fn file_row(&self, file: &file_search::FileEntry) {
+        let title = gtk::Label::builder()
+            .label(file.name.as_str())
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .css_classes(["elavo-lens-title"])
+            .build();
+        let icon = gtk::Image::builder()
+            .pixel_size(16)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .css_classes(["elavo-lens-page-icon", "elavo-lens-file-icon"])
+            .build();
+        if file.is_dir {
+            icon.set_icon_name(Some("folder-symbolic"));
+        } else {
+            let (kind, _) = gio::content_type_guess(Some(&file.path), None::<&[u8]>);
+            icon.set_from_gicon(&gio::content_type_get_symbolic_icon(&kind));
+        }
+        let folder = file_search::folder_label(&file.path, &glib::home_dir());
+        self.row(
+            icon,
+            &title,
+            Some(&folder),
+            Action::OpenFile(file.path.clone()),
+        );
+        if let Some(row) = self.list.last_child() {
+            let path = file.path.clone();
+            self.add_menu_opener(&row, move |lens, widget, at| {
+                lens.open_file_menu(&path, widget, at);
+            });
+        }
+    }
+
+    /// Start this opening's file scan, unless it has started. Results
+    /// arrive later and refresh the list if the search still wants files.
+    fn search_files(&self) {
+        if self.scan_started.replace(true) {
+            return;
+        }
+        self.recent_files.replace(recent_files());
+        let serial = self.scan_serial.get();
+        let home = glib::home_dir();
+        let places = file_places(&home);
+        let scan = gio::spawn_blocking(move || file_search::scan(&home, &places));
+        let lens = self.me.clone();
+        glib::spawn_future_local(async move {
+            let Ok(found) = scan.await else {
+                return;
+            };
+            let Some(lens) = lens.upgrade() else {
+                return;
+            };
+            if lens.scan_serial.get() != serial {
+                return;
+            }
+            lens.scanned_files.replace(Rc::new(found));
+            let wants_files = lens.entry.text().trim().chars().count() >= file_search::MIN_QUERY;
+            if lens.window.is_visible()
+                && !lens.apps_button.is_active()
+                && wants_files
+                && lens.menu.borrow().is_none()
+            {
+                lens.refresh();
+            }
+        });
     }
 
     fn page_row(&self, page: &pages::Page) {
@@ -948,12 +1108,44 @@ impl Lens {
 
         let query = self.entry.text();
         if query.trim().is_empty() {
-            self.results.set_visible(false);
+            // Before anything is typed, the application opened most often
+            // is the Top Hit, so Return opens it.
+            let top = self.most_launched();
+            if let Some(app) = &top {
+                self.heading("Top Hit");
+                self.app_row(app);
+                self.move_selection(0);
+            }
+            self.results.set_visible(top.is_some());
             self.sync_blur();
             return;
         }
 
-        if let Some(answer) = calc::evaluate(&query) {
+        let conversion = units::convert(&query);
+        let answer = conversion
+            .is_none()
+            .then(|| calc::evaluate(&query))
+            .flatten();
+        if let Some(conversion) = &conversion {
+            self.heading("Conversion");
+            let title = gtk::Label::builder()
+                .label(conversion.result.as_str())
+                .xalign(0.0)
+                .selectable(false)
+                .css_classes(["elavo-lens-calc"])
+                .build();
+            let icon = gtk::Image::builder()
+                .icon_name("accessories-calculator-symbolic")
+                .pixel_size(28)
+                .build();
+            self.row(
+                icon,
+                &title,
+                Some(&format!("{} · Press Return to copy", conversion.expression)),
+                Action::Copy(conversion.result.clone()),
+            );
+        }
+        if let Some(answer) = answer.clone() {
             self.heading("Calculator");
             let title = gtk::Label::builder()
                 .label(format!("= {answer}"))
@@ -1002,6 +1194,20 @@ impl Lens {
         // The best match of either kind is the Top Hit. A page wins a tie, so
         // "wifi" opens Wi-Fi rather than System Settings, whose search
         // words include every page's.
+        let mut files = if query.trim().chars().count() >= file_search::MIN_QUERY {
+            self.search_files();
+            file_search::rank(
+                &query,
+                &self.recent_files.borrow(),
+                &self.scanned_files.borrow(),
+                MAX_FILES + 1,
+            )
+        } else {
+            Vec::new()
+        };
+        // A file is the Top Hit only when nothing else answers.
+        let file_on_top =
+            ranked.is_empty() && found.is_empty() && conversion.is_none() && answer.is_none();
         let page_on_top = match (ranked.first(), found.first()) {
             (Some((app, _)), Some((page, _))) => page >= app,
             (None, Some(_)) => true,
@@ -1017,7 +1223,12 @@ impl Lens {
             self.heading("Top Hit");
             self.app_row(&top);
             found.truncate(MAX_PAGES);
+        } else if file_on_top && !files.is_empty() {
+            let top = files.remove(0);
+            self.heading("Top Hit");
+            self.file_row(&top);
         }
+        files.truncate(MAX_FILES);
         if !ranked.is_empty() {
             self.heading("Applications");
             for (_, app) in &ranked {
@@ -1028,6 +1239,12 @@ impl Lens {
             self.heading("Settings");
             for (_, page) in &found {
                 self.page_row(page);
+            }
+        }
+        if !files.is_empty() {
+            self.heading("Files");
+            for file in &files {
+                self.file_row(file);
             }
         }
 
@@ -1090,11 +1307,259 @@ impl Lens {
 
     fn run(&self, action: &Action) {
         match action {
-            Action::Launch(app) => elavo_common::launch(&app.info, None),
+            Action::Launch(app) => {
+                elavo_common::launch(&app.info, None);
+                self.record_launch(app);
+            }
             Action::Copy(text) => WidgetExt::display(&self.window).clipboard().set_text(text),
             Action::OpenPage(id) => pages::open(id),
+            Action::OpenFile(path) => {
+                let uri = gio::File::for_path(path).uri();
+                elavo_common::files::open_uri(&uri);
+                // Opened from Lens, it counts as recently used.
+                gtk::RecentManager::default().add_item(&uri);
+            }
+            Action::LaunchWith(app, action) => {
+                elavo_common::launch(&app.info, Some(action));
+                self.record_launch(app);
+            }
         }
         self.hide();
+    }
+
+    /// A right click or a long press on an application opens its menu. The
+    /// press is claimed, so it neither launches the application nor starts
+    /// a drag to the Dock.
+    fn add_menu_gestures(&self, widget: &impl IsA<gtk::Widget>, app: &AppEntry) {
+        let id = app.id.clone();
+        self.add_menu_opener(widget, move |lens, widget, at| {
+            lens.open_menu(&id, widget, at);
+        });
+    }
+
+    /// Call `open` with the widget and the point pressed on a right click
+    /// or a long press on `widget`.
+    fn add_menu_opener(
+        &self,
+        widget: &impl IsA<gtk::Widget>,
+        open: impl Fn(&Lens, &gtk::Widget, Option<(f64, f64)>) + 'static,
+    ) {
+        let open = Rc::new(open);
+        let click = gtk::GestureClick::builder()
+            .button(gdk::BUTTON_SECONDARY)
+            .build();
+        let lens = self.me.clone();
+        let on_click = open.clone();
+        click.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let (Some(lens), Some(widget)) = (lens.upgrade(), gesture.widget()) {
+                on_click(&lens, &widget, Some((x, y)));
+            }
+        });
+        widget.add_controller(click);
+
+        let press = gtk::GestureLongPress::builder().touch_only(false).build();
+        let lens = self.me.clone();
+        press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let (Some(lens), Some(widget)) = (lens.upgrade(), gesture.widget()) {
+                open(&lens, &widget, Some((x, y)));
+            }
+        });
+        widget.add_controller(press);
+    }
+
+    /// The menu on a file or folder: Open, and Show in Files.
+    fn open_file_menu(&self, path: &std::path::Path, anchor: &gtk::Widget, at: Option<(f64, f64)>) {
+        self.close_menu();
+        self.select(anchor);
+        let (popover, items) = new_menu();
+        let open = path.to_path_buf();
+        self.menu_item(&items, &popover, "Open", move |lens| {
+            lens.run(&Action::OpenFile(open.clone()));
+        });
+        let uri = gio::File::for_path(path).uri().to_string();
+        self.menu_item(&items, &popover, "Show in Files", move |lens| {
+            elavo_common::files::show_in_files(&uri);
+            lens.hide();
+        });
+        self.present_menu(&popover, &items, anchor, at);
+    }
+
+    /// The Menu key or Shift+F10 opens the menu on the chosen tile or row.
+    fn open_menu_on_selection(&self) {
+        if self.apps_button.is_active() {
+            let focused = GtkWindowExt::focus(&self.window).and_then(|w| tile_of(&w));
+            let child = focused.or_else(|| self.grid.selected_children().into_iter().next());
+            if let Some(child) = child {
+                if let Some(app) = self.grid_app(&child) {
+                    self.open_menu(&app.id, child.upcast_ref(), None);
+                }
+            }
+        } else if let Some(row) = self.list.selected_row() {
+            let action = self
+                .actions
+                .borrow()
+                .get(row.index() as usize)
+                .cloned()
+                .flatten();
+            match action {
+                Some(Action::Launch(app)) => self.open_menu(&app.id, row.upcast_ref(), None),
+                Some(Action::OpenFile(path)) => self.open_file_menu(&path, row.upcast_ref(), None),
+                _ => {}
+            }
+        }
+    }
+
+    /// Open the menu on the application `id`, beside `anchor`, at `at` in
+    /// its coordinates when the pointer opened it.
+    fn open_menu(&self, id: &str, anchor: &gtk::Widget, at: Option<(f64, f64)>) {
+        let Some(app) = self.apps.borrow().iter().find(|a| a.id == id).cloned() else {
+            return;
+        };
+        self.close_menu();
+        self.select(anchor);
+
+        let (popover, items) = new_menu();
+
+        let ids: Vec<String> = app
+            .info
+            .list_actions()
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        let actions = menu::desktop_actions(&ids);
+        if let Some(action) = &actions.new_window {
+            let (app, action) = (app.clone(), action.clone());
+            self.menu_item(&items, &popover, "New Window", move |lens| {
+                lens.run(&Action::LaunchWith(app.clone(), action.clone()));
+            });
+        }
+        for action in &actions.others {
+            let label = app.info.action_name(action);
+            let (app, action) = (app.clone(), action.clone());
+            self.menu_item(&items, &popover, &label, move |lens| {
+                lens.run(&Action::LaunchWith(app.clone(), action.clone()));
+            });
+        }
+        let launches = items.first_child().is_some();
+
+        // Files is always in the Dock, and the App Launcher is not listed.
+        let pinnable = app.id != elavo_common::pins::FILES && app.id != LAUNCHER;
+        let app_bay = app_bay_manages(&app).then(|| self.app_bay()).flatten();
+        if launches && (pinnable || app_bay.is_some()) {
+            items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        }
+        if pinnable {
+            let pinned = elavo_common::pins::load_saved().contains(&app.id);
+            let id = app.id.clone();
+            // Lens stays open, so the person sees the Dock take the change.
+            self.menu_item(&items, &popover, menu::pin_label(pinned), move |_| {
+                let mut pins = elavo_common::pins::load_saved();
+                if elavo_common::pins::set_pin(&mut pins, &id, !pinned) {
+                    elavo_common::pins::save(&pins);
+                }
+            });
+        }
+        if let Some(info) = app_bay {
+            let target = app_bay_id(&app);
+            self.menu_item(&items, &popover, "Show in App Bay", move |lens| {
+                open_app_bay(&info, target.as_deref());
+                lens.hide();
+            });
+        }
+        self.present_menu(&popover, &items, anchor, at);
+    }
+
+    /// Show a menu made with [`new_menu`] beside `anchor`, at `at` when the
+    /// pointer opened it, with its first item focused. An empty menu is not
+    /// shown.
+    fn present_menu(
+        &self,
+        popover: &gtk::Popover,
+        items: &gtk::Box,
+        anchor: &gtk::Widget,
+        at: Option<(f64, f64)>,
+    ) {
+        let Some(first) = items.first_child() else {
+            return;
+        };
+
+        popover.set_child(Some(items));
+        popover.set_parent(anchor);
+        if let Some((x, y)) = at {
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        }
+        let lens = self.me.clone();
+        popover.connect_closed(move |popover| {
+            let Some(lens) = lens.upgrade() else {
+                return;
+            };
+            // Unparented once the click that closed it is over, so the
+            // outside click sees the menu was open.
+            let popover = popover.clone();
+            glib::idle_add_local_once(move || {
+                popover.unparent();
+                let mut menu = lens.menu.borrow_mut();
+                if menu.as_ref() == Some(&popover) {
+                    *menu = None;
+                }
+            });
+        });
+        self.menu.replace(Some(popover.clone()));
+        popover.popup();
+        first.grab_focus();
+    }
+
+    /// One menu item. Choosing it closes the menu, then runs `choose`.
+    fn menu_item(
+        &self,
+        items: &gtk::Box,
+        popover: &gtk::Popover,
+        label: &str,
+        choose: impl Fn(&Lens) + 'static,
+    ) {
+        let button = gtk::Button::builder()
+            .child(&gtk::Label::builder().label(label).xalign(0.0).build())
+            .build();
+        let lens = self.me.clone();
+        let popover = popover.downgrade();
+        button.connect_clicked(move |_| {
+            if let Some(popover) = popover.upgrade() {
+                popover.popdown();
+            }
+            if let Some(lens) = lens.upgrade() {
+                choose(&lens);
+            }
+        });
+        items.append(&button);
+    }
+
+    fn close_menu(&self) {
+        let menu = self.menu.borrow().clone();
+        if let Some(menu) = menu {
+            menu.popdown();
+        }
+    }
+
+    /// Select the tile or row a menu opens on, so it is clear which
+    /// application the menu is for.
+    fn select(&self, widget: &gtk::Widget) {
+        if let Some(child) = tile_of(widget) {
+            self.grid.select_child(&child);
+        } else if let Some(row) = widget.downcast_ref::<gtk::ListBoxRow>() {
+            self.list.select_row(Some(row));
+        }
+    }
+
+    /// App Bay, if it is installed.
+    fn app_bay(&self) -> Option<elavo_common::DesktopAppInfo> {
+        self.apps
+            .borrow()
+            .iter()
+            .find(|a| a.id == APP_BAY)
+            .map(|a| a.info.clone())
+            .or_else(|| elavo_common::DesktopAppInfo::new(APP_BAY))
     }
 
     fn show(self: &Rc<Self>, applications: bool) {
@@ -1105,6 +1570,12 @@ impl Lens {
                 .cloned()
                 .collect(),
         );
+        self.usage.replace(usage::Usage::load(&usage_path()));
+        // Files are found again on the first search of this opening.
+        self.scan_serial.set(self.scan_serial.get().wrapping_add(1));
+        self.scan_started.set(false);
+        self.scanned_files.replace(Rc::default());
+        self.recent_files.replace(Vec::new());
         self.populate_grid();
         self.populate_pills();
         self.load_pages();
@@ -1141,6 +1612,7 @@ impl Lens {
     }
 
     fn hide(&self) {
+        self.close_menu();
         self.window.set_visible(false);
         self.come_back();
     }
@@ -1154,6 +1626,117 @@ impl Lens {
             self.hide();
         }
     }
+}
+
+/// The grid tile `widget` is, or is inside.
+fn tile_of(widget: &gtk::Widget) -> Option<gtk::FlowBoxChild> {
+    widget
+        .downcast_ref::<gtk::FlowBoxChild>()
+        .cloned()
+        .or_else(|| {
+            widget
+                .ancestor(gtk::FlowBoxChild::static_type())
+                .and_downcast()
+        })
+}
+
+/// A menu to fill with [`Lens::menu_item`] and show with
+/// [`Lens::present_menu`].
+fn new_menu() -> (gtk::Popover, gtk::Box) {
+    let popover = gtk::Popover::builder()
+        .has_arrow(false)
+        .position(gtk::PositionType::Bottom)
+        .css_classes(["elavo-lens-menu"])
+        .build();
+    let items = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .build();
+    (popover, items)
+}
+
+/// Where the file scan looks below the home folder: the usual folders,
+/// as named in `user-dirs.dirs`, or their standard names.
+fn file_places(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    use glib::UserDirectory as Dir;
+    [
+        (Dir::Desktop, "Desktop"),
+        (Dir::Documents, "Documents"),
+        (Dir::Downloads, "Downloads"),
+        (Dir::Pictures, "Pictures"),
+        (Dir::Music, "Music"),
+        (Dir::Videos, "Videos"),
+    ]
+    .into_iter()
+    .map(|(dir, name)| glib::user_special_dir(dir).unwrap_or_else(|| home.join(name)))
+    .collect()
+}
+
+/// Recently used local files that still exist, most recent first.
+fn recent_files() -> Vec<file_search::FileEntry> {
+    let mut items: Vec<(i64, file_search::FileEntry)> = gtk::RecentManager::default()
+        .items()
+        .into_iter()
+        .filter_map(|item| {
+            let path = gio::File::for_uri(&item.uri()).path()?;
+            let meta = std::fs::metadata(&path).ok()?;
+            let when = item.modified().to_unix();
+            Some((
+                when,
+                file_search::FileEntry {
+                    name: item.display_name().to_string(),
+                    is_dir: meta.is_dir(),
+                    path,
+                    recent: true,
+                },
+            ))
+        })
+        .collect();
+    items.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
+    items.into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// Whether App Bay installed `app`, so it can update or remove it: a
+/// Flatpak, or an Applications entry whose `entry.json` names a Flatpak or
+/// an AppImage.
+fn app_bay_manages(app: &AppEntry) -> bool {
+    let flatpak = app.info.string("X-Flatpak");
+    let json = entry_json(app);
+    menu::managed_by_app_bay(
+        flatpak.as_deref(),
+        json.as_deref().and_then(menu::entry_kind),
+    )
+}
+
+/// The ID App Bay opens `app`'s page by, see [`menu::app_bay_id`].
+fn app_bay_id(app: &AppEntry) -> Option<String> {
+    let flatpak = app.info.string("X-Flatpak");
+    menu::app_bay_id(flatpak.as_deref(), entry_json(app).as_deref())
+}
+
+/// The `entry.json` beside `app`'s desktop file, when it is an `.eapp`.
+fn entry_json(app: &AppEntry) -> Option<String> {
+    app.info
+        .filename()
+        .and_then(|path| {
+            path.parent()
+                .filter(|p| p.extension().is_some_and(|e| e == "eapp"))
+                .map(|bundle| bundle.join("entry.json"))
+        })
+        .and_then(|json| std::fs::read_to_string(json).ok())
+}
+
+/// Open App Bay on `id`'s page: `elavo-app-bay --app ID`, which an open
+/// App Bay takes over. Without an ID, or when that cannot start, App Bay
+/// opens as usual.
+fn open_app_bay(info: &elavo_common::DesktopAppInfo, id: Option<&str>) {
+    if let Some(id) = id {
+        let argv: [&std::ffi::OsStr; 3] = ["elavo-app-bay".as_ref(), "--app".as_ref(), id.as_ref()];
+        match gio::Subprocess::newv(&argv, gio::SubprocessFlags::NONE) {
+            Ok(_) => return,
+            Err(err) => eprintln!("lens: elavo-app-bay --app {id}: {err}"),
+        }
+    }
+    elavo_common::launch(info, None);
 }
 
 fn app_image(app: &AppEntry, size: i32) -> gtk::Image {

@@ -147,6 +147,16 @@ impl Dock {
             dock.monitors.borrow_mut().push(monitor);
         }
 
+        // Lens pins and unpins through the same file.
+        let weak = Rc::downgrade(&dock);
+        if let Some(monitor) = elavo_common::pins::watch(move || {
+            if let Some(dock) = weak.upgrade() {
+                dock.reload_pins();
+            }
+        }) {
+            dock.monitors.borrow_mut().push(monitor);
+        }
+
         let weak = Rc::downgrade(&dock);
         let apps = elavo_common::apps::watch(move || {
             if let Some(dock) = weak.upgrade() {
@@ -871,6 +881,20 @@ impl Dock {
             }
             pins::save(&pins);
         }
+        self.refresh();
+    }
+
+    /// Take up pins saved by someone else, such as Lens. The Dock's own
+    /// saves come back here too and change nothing.
+    fn reload_pins(self: &Rc<Self>) {
+        let Some(mut saved) = elavo_common::pins::read_saved() else {
+            return;
+        };
+        pins::lock_files(&mut saved);
+        if *self.pins.borrow() == saved {
+            return;
+        }
+        self.pins.replace(saved);
         self.refresh();
     }
 

@@ -4,7 +4,9 @@
 
 pub mod apps;
 pub mod blur;
+pub mod files;
 pub mod matching;
+pub mod pins;
 pub mod ranking;
 pub mod toplevels;
 

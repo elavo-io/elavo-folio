@@ -177,3 +177,49 @@ window.elavo-lens {
   background-color: @theme_bg_color;
   transition: none;
 }
+
+/* The menu on an application: a right click, a long press, or the Menu key.
+   It sits inside a tile or row, so its labels undo their colors and size. */
+popover.elavo-lens-menu > contents {
+  padding: 5px;
+  border-radius: 12px;
+  background-color: @theme_bg_color;
+  color: @theme_fg_color;
+  box-shadow: 0 8px 28px alpha(black, 0.3), 0 0 0 1px alpha(@theme_fg_color, 0.1);
+}
+
+.elavo-lens-menu button {
+  min-width: 168px;
+  min-height: 28px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  box-shadow: none;
+  color: @theme_fg_color;
+  font-weight: normal;
+}
+
+.elavo-lens-menu button:hover,
+.elavo-lens-menu button:focus-visible {
+  background-color: var(--accent-bg-color, @theme_selected_bg_color);
+  color: var(--accent-fg-color, @theme_selected_fg_color);
+}
+
+.elavo-lens-column popover.elavo-lens-menu button label {
+  color: inherit;
+  font-size: 13px;
+}
+
+.elavo-lens-menu separator {
+  min-height: 1px;
+  margin: 4px 8px;
+  background-color: alpha(@theme_fg_color, 0.12);
+}
+
+/* Files in search: the file type's symbolic icon on the same tile as a
+   System Settings page, in a quieter color so the two read apart. */
+.elavo-lens-file-icon {
+  background-color: alpha(@theme_fg_color, 0.12);
+  color: @theme_fg_color;
+}
