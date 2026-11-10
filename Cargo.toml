@@ -11,6 +11,7 @@ members = [
     "crates/elavo-greeter",
     "crates/elavo-input",
     "crates/elavo-desktop",
+    "crates/elavo-polkit-agent",
 ]
 
 [workspace.package]

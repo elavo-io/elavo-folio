@@ -22,6 +22,8 @@ The panel also owns `com.canonical.AppMenu.Registrar`. Qt applications that find
 
 **Login and lock screen.** One program, `elavo-greeter`, draws both. The selected person's wallpaper fills the screen, the time sits near the top in frosted white numerals over a blurred copy of it, and a thin bar shows the Elavo sun, network, volume, and battery. At login the sun opens Sleep, Restart, and Shut Down. Each person is a round picture and a name, with the password field under the selected one. `/etc/elavo/greeter.conf` can switch the login window to Name and Password fields instead. At login greetd runs it inside cage and it signs in through greetd's IPC. `elavo-greeter --lock` takes the screen with `ext-session-lock-v1` and checks the password with PAM service `elavo-lock`.
 
+**Password prompt.** When an application needs an administrator, `elavo-polkit-agent` shows one card over everything: a lock with the requesting app's icon, a bold line naming the app, the person's name, a password field, and Unlock and Cancel pills. A wrong password shakes the card and clears the field. It is the session's polkit agent and checks the password with polkit's `polkit-agent-helper-1`. `elavo-polkit-agent --preview` shows the card with sample text without touching polkit.
+
 ## Projects Folio uses
 
 The code in this repository is Folio's. These programs and libraries stay their own projects, with their own licenses.
@@ -52,6 +54,7 @@ The Trash is GVfs `trash:///`. Show in Files calls `org.freedesktop.FileManager1
 | `crates/elavo-lens` | Lens: application search, the calculator, and the Applications grid |
 | `crates/elavo-switcher` | App switcher: Alt+Tab between applications, Alt+` between one application's windows |
 | `crates/elavo-switcher-settings` | The switcher's settings file and the App Switcher page Settings embeds |
+| `crates/elavo-polkit-agent` | Administrator password prompt: the session's polkit agent, a card over everything that checks the password with polkit's helper |
 | `crates/elavo-common` | Desktop-file index, `app_id` matching, search ranking, launching, and the window list |
 | `crates/elavo-greeter` | Login and lock screen, and `elavo-greeter-publish`, which copies a session's wallpaper for the login screen |
 | `extensions/nautilus-folio` | Nautilus plugin that runs Folio's File, Edit, View, and Go actions inside Files |

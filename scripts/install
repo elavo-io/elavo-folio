@@ -27,6 +27,11 @@ install -Dm644 data/tmpfiles/elavo-greeter.conf \
     "${dest}${prefix}/lib/tmpfiles.d/elavo-greeter.conf"
 install -Dm644 data/pam/elavo-lock "${dest}${sysconfdir}/pam.d/elavo-lock"
 
+# The administrator password prompt (polkit agent). The image's
+# elavo-polkit-agent.service user unit starts it.
+install -Dm755 target/release/elavo-polkit-agent \
+    "${dest}${prefix}/libexec/elavo-polkit-agent"
+
 # Nautilus 50 loads extensions only from <libdir>/nautilus/extensions-4.
 make -C extensions/nautilus-folio
 install -Dm755 extensions/nautilus-folio/libfolio-files.so \

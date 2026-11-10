@@ -1,0 +1,96 @@
+/* The password card matches the message dialogs in the Elavo GTK theme
+   (elavo-visuals, window.dialog.message): a solid card in the window
+   color with 20px corners, bold left-aligned type, and full-width pill
+   buttons, the primary one in the accent color. Colors come from the
+   theme, so light and dark follow it. */
+
+window.elavo-polkit-agent {
+  background: transparent;
+}
+
+.elavo-auth-card {
+  padding: 20px;
+  border-radius: 20px;
+  background-color: @theme_bg_color;
+  color: @theme_fg_color;
+  box-shadow: 0 10px 32px alpha(black, 0.32),
+              0 0 0 1px alpha(@theme_fg_color, 0.10);
+}
+
+/* The circle behind the lock. The requesting app's icon sits on its
+   lower right. */
+.elavo-auth-lock {
+  min-width: 64px;
+  min-height: 64px;
+  border-radius: 9999px;
+  background-color: alpha(@theme_fg_color, 0.12);
+  color: @theme_fg_color;
+}
+
+.elavo-auth-badge {
+  -gtk-icon-shadow: 0 1px 2px alpha(black, 0.3);
+}
+
+.elavo-auth-title {
+  font-weight: 700;
+  font-size: 110%;
+}
+
+.elavo-auth-body {
+  opacity: 0.7;
+}
+
+.elavo-auth-note {
+  font-size: 90%;
+  opacity: 0.8;
+}
+
+.elavo-auth-note.error {
+  color: @error_color;
+  opacity: 1;
+}
+
+.elavo-auth-card entry {
+  min-height: 32px;
+  border-radius: 8px;
+}
+
+/* Secondary action: a neutral pill. */
+button.elavo-auth-pill {
+  min-height: 24px;
+  padding: 8px 20px;
+  border-radius: 9999px;
+  border: none;
+  outline-offset: 2px;
+  box-shadow: none;
+  background-image: none;
+  background-color: alpha(@theme_fg_color, 0.12);
+  color: @theme_fg_color;
+  font-weight: 600;
+}
+
+button.elavo-auth-pill:hover {
+  background-color: alpha(@theme_fg_color, 0.18);
+}
+
+button.elavo-auth-pill:active {
+  background-color: alpha(@theme_fg_color, 0.26);
+}
+
+/* Primary action: the accent color. */
+button.elavo-auth-pill.suggested-action {
+  background-color: @accent_color;
+  color: @theme_selected_fg_color;
+}
+
+button.elavo-auth-pill.suggested-action:hover {
+  filter: brightness(1.08);
+}
+
+button.elavo-auth-pill.suggested-action:active {
+  filter: brightness(0.92);
+}
+
+button.elavo-auth-pill:disabled {
+  opacity: 0.5;
+}

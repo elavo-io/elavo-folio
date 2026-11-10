@@ -191,6 +191,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elavo-polkit-agent"
+version = "0.1.0"
+dependencies = [
+ "gio-unix",
+ "gtk4",
+ "gtk4-layer-shell",
+ "libc",
+]
+
+[[package]]
 name = "elavo-switcher"
 version = "0.2.1"
 dependencies = [

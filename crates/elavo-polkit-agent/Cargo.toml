@@ -1,0 +1,12 @@
+[package]
+name = "elavo-polkit-agent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gtk.workspace = true
+gtk4-layer-shell.workspace = true
+gio-unix.workspace = true
+libc.workspace = true
