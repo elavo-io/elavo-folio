@@ -1,8 +1,10 @@
-//! Lens: Super+Space search for applications and quick calculations,
-//! with an Applications section that browses every installed app.
+//! Lens: Super+Space search for applications, System Settings pages, and
+//! quick calculations, with an Applications section that browses every
+//! installed app.
 //! Spec: elavo-architecture-and-planning-internal, planning/desktop/lens.md.
 
 mod calc;
+mod pages;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
@@ -18,6 +20,7 @@ const STYLE: &str = include_str!("style.css");
 /// between the panel and the Dock.
 const WIDTH: i32 = 560;
 const MAX_APPLICATIONS: usize = 8;
+const MAX_PAGES: usize = 4;
 const GRID_ICON: i32 = 44;
 const GRID_COLUMNS: u32 = 7;
 const LIST_HEIGHT: i32 = 360;
@@ -169,6 +172,8 @@ fn follow_color_scheme() {
 enum Action {
     Launch(AppEntry),
     Copy(String),
+    /// A System Settings page, by its `--pane` ID.
+    OpenPage(String),
 }
 
 /// What System Settings' Lens pane chose in `elavo/lens.conf`: the
@@ -221,6 +226,8 @@ struct Lens {
     actions: RefCell<Vec<Option<Action>>>,
     /// An application is being dragged out, to the Dock.
     dragging: Cell<bool>,
+    /// System Settings pages, refreshed each time Lens opens.
+    pages: RefCell<Vec<pages::Page>>,
     me: Weak<Lens>,
 }
 
@@ -360,6 +367,7 @@ impl Lens {
             apps: RefCell::default(),
             actions: RefCell::default(),
             dragging: Cell::new(false),
+            pages: RefCell::default(),
         });
         lens.connect(&root);
         lens.connect_move(&root);
@@ -781,6 +789,28 @@ impl Lens {
         }
     }
 
+    fn page_row(&self, page: &pages::Page) {
+        let title = gtk::Label::builder()
+            .label(page.title.as_str())
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["elavo-lens-title"])
+            .build();
+        let icon = gtk::Image::builder()
+            .icon_name(page.icon.as_str())
+            .pixel_size(16)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .css_classes(["elavo-lens-page-icon"])
+            .build();
+        self.row(
+            icon,
+            &title,
+            Some("System Settings"),
+            Action::OpenPage(page.id.clone()),
+        );
+    }
+
     /// Dragging an application out of Lens offers its Applications entry,
     /// or its desktop file, as a link; the Dock pins it.
     fn drag_source(&self, app: &AppEntry) -> gtk::DragSource {
@@ -903,7 +933,7 @@ impl Lens {
             );
         }
 
-        let ranked: Vec<AppEntry> = {
+        let mut ranked: Vec<(u32, AppEntry)> = {
             let apps = self.apps.borrow();
             let mut scored: Vec<(u32, &AppEntry)> = apps
                 .iter()
@@ -913,17 +943,51 @@ impl Lens {
             scored
                 .into_iter()
                 .take(MAX_APPLICATIONS + 1)
-                .map(|(_, a)| a.clone())
+                .map(|(s, a)| (s, a.clone()))
                 .collect()
         };
-        if let Some((top, rest)) = ranked.split_first() {
+        let mut found: Vec<(u32, pages::Page)> = {
+            let pages = self.pages.borrow();
+            let mut scored: Vec<(u32, &pages::Page)> = pages
+                .iter()
+                .filter_map(|p| p.score(&query).map(|s| (s, p)))
+                .collect();
+            scored.sort_by_key(|s| std::cmp::Reverse(s.0));
+            scored
+                .into_iter()
+                .take(MAX_PAGES + 1)
+                .map(|(s, p)| (s, p.clone()))
+                .collect()
+        };
+        // The best match of either kind is the Top Hit. A page wins a tie, so
+        // "wifi" opens Wi-Fi rather than System Settings, whose search
+        // words include every page's.
+        let page_on_top = match (ranked.first(), found.first()) {
+            (Some((app, _)), Some((page, _))) => page >= app,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if page_on_top {
+            let (_, page) = found.remove(0);
             self.heading("Top Hit");
-            self.app_row(top);
-            if !rest.is_empty() {
-                self.heading("Applications");
-                for app in rest {
-                    self.app_row(app);
-                }
+            self.page_row(&page);
+            ranked.truncate(MAX_APPLICATIONS);
+        } else if !ranked.is_empty() {
+            let (_, top) = ranked.remove(0);
+            self.heading("Top Hit");
+            self.app_row(&top);
+            found.truncate(MAX_PAGES);
+        }
+        if !ranked.is_empty() {
+            self.heading("Applications");
+            for (_, app) in &ranked {
+                self.app_row(app);
+            }
+        }
+        if !found.is_empty() {
+            self.heading("Settings");
+            for (_, page) in &found {
+                self.page_row(page);
             }
         }
 
@@ -988,6 +1052,7 @@ impl Lens {
         match action {
             Action::Launch(app) => elavo_common::launch(&app.info, None),
             Action::Copy(text) => WidgetExt::display(&self.window).clipboard().set_text(text),
+            Action::OpenPage(id) => pages::open(id),
         }
         self.hide();
     }
@@ -997,6 +1062,7 @@ impl Lens {
             .replace(load_applications().shown().cloned().collect());
         self.populate_grid();
         self.populate_pills();
+        self.load_pages();
         self.entry.set_text("");
         if self.apps_button.is_active() == applications {
             self.refresh();
@@ -1005,6 +1071,28 @@ impl Lens {
         }
         self.window.present();
         self.entry.grab_focus();
+    }
+
+    /// Ask System Settings for its pages again, in case a page came or went
+    /// (Touchscreen controls follows the touchscreen). Until the answer
+    /// arrives, the last list is searched.
+    fn load_pages(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        pages::load(move |pages| {
+            let Some(s) = weak.upgrade() else {
+                return;
+            };
+            if pages.is_empty() && !s.pages.borrow().is_empty() {
+                return;
+            }
+            s.pages.replace(pages);
+            if s.window.is_visible()
+                && !s.apps_button.is_active()
+                && !s.entry.text().trim().is_empty()
+            {
+                s.refresh();
+            }
+        });
     }
 
     fn hide(&self) {
@@ -1084,7 +1172,10 @@ mod tests {
     #[test]
     fn a_drag_keeps_the_panel_on_screen() {
         let bar = PANEL_HEIGHT;
-        assert_eq!(clamp_origin(-500.0, -500.0, 1366.0, 768.0, bar), (EDGE, EDGE));
+        assert_eq!(
+            clamp_origin(-500.0, -500.0, 1366.0, 768.0, bar),
+            (EDGE, EDGE)
+        );
         let (x, y) = clamp_origin(5000.0, 5000.0, 1366.0, 768.0, bar);
         assert_eq!(x, 1366.0 - f64::from(WIDTH) - EDGE);
         assert_eq!(y, 768.0 - bar - EDGE);
@@ -1097,7 +1188,10 @@ mod tests {
         let back = origin_from_position(saved, 1366.0, 768.0);
         assert!((back.0 - origin.0).abs() < 1e-9 && (back.1 - origin.1).abs() < 1e-9);
         let big = origin_from_position(saved, 2732.0, 1536.0);
-        assert!((big.0 + f64::from(WIDTH) / 2.0 - 2.0 * (origin.0 + f64::from(WIDTH) / 2.0)).abs() < 1e-9);
+        assert!(
+            (big.0 + f64::from(WIDTH) / 2.0 - 2.0 * (origin.0 + f64::from(WIDTH) / 2.0)).abs()
+                < 1e-9
+        );
         assert!((big.1 - 240.0).abs() < 1e-9);
     }
 

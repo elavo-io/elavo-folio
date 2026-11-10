@@ -153,3 +153,13 @@ window.elavo-lens {
   background-image: linear-gradient(to left, alpha(@theme_bg_color, 0.96), alpha(@theme_bg_color, 0));
   background-position: right center;
 }
+
+/* System Settings pages: the page's symbolic icon on a tile the size of an
+   app icon, like the tiles in the Settings sidebar. */
+.elavo-lens-page-icon {
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 7px;
+  background-color: var(--accent-bg-color, @theme_selected_bg_color);
+  color: var(--accent-fg-color, @theme_selected_fg_color);
+}
