@@ -6,22 +6,21 @@ window.elavo-lens {
   background: transparent;
 }
 
-.elavo-lens-column {
-  margin-top: 160px;
-}
+/* Lens places the column itself, so it can be dragged. Light and dark
+   follow the color scheme through the theme's colors below. */
 
 .elavo-lens-bar {
-  min-height: 54px;
-  padding: 0 10px 0 18px;
-  border-radius: 27px;
+  min-height: 44px;
+  padding: 0 6px 0 14px;
+  border-radius: 22px;
   background-color: alpha(@theme_bg_color, 0.94);
   color: @theme_fg_color;
   box-shadow: 0 10px 40px alpha(black, 0.28), 0 0 0 1px alpha(@theme_fg_color, 0.08);
 }
 
 .elavo-lens-bar entry {
-  min-height: 48px;
-  font-size: 20px;
+  min-height: 40px;
+  font-size: 17px;
   background: none;
   border: none;
   box-shadow: none;
@@ -29,11 +28,11 @@ window.elavo-lens {
 }
 
 .elavo-lens-bar button {
-  min-width: 36px;
-  min-height: 36px;
+  min-width: 32px;
+  min-height: 32px;
   padding: 0;
   border: none;
-  border-radius: 18px;
+  border-radius: 16px;
   background: none;
   box-shadow: none;
 }
@@ -47,9 +46,9 @@ window.elavo-lens {
 }
 
 .elavo-lens-results {
-  margin-top: 8px;
-  padding: 8px;
-  border-radius: 22px;
+  margin-top: 6px;
+  padding: 6px;
+  border-radius: 18px;
   background-color: alpha(@theme_bg_color, 0.96);
   color: @theme_fg_color;
   box-shadow: 0 10px 40px alpha(black, 0.28), 0 0 0 1px alpha(@theme_fg_color, 0.08);
@@ -60,7 +59,7 @@ window.elavo-lens {
 }
 
 .elavo-lens-results row {
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: 10px;
 }
 
@@ -80,7 +79,7 @@ window.elavo-lens {
 }
 
 .elavo-lens-title {
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .elavo-lens-calc {
@@ -94,8 +93,33 @@ window.elavo-lens {
   opacity: 0.65;
 }
 
+.elavo-lens-pills {
+  padding: 2px 4px 8px;
+}
+
+.elavo-lens-pills button {
+  min-height: 26px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 13px;
+  background-color: alpha(@theme_fg_color, 0.07);
+  color: @theme_fg_color;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.elavo-lens-pills button:hover {
+  background-color: alpha(@theme_fg_color, 0.12);
+}
+
+.elavo-lens-pills button:checked {
+  background-color: var(--accent-bg-color, @theme_selected_bg_color);
+  color: var(--accent-fg-color, @theme_selected_fg_color);
+}
+
 .elavo-lens-grid flowboxchild {
-  padding: 10px 4px;
+  padding: 6px 2px;
   border-radius: 12px;
 }
 
@@ -109,5 +133,5 @@ window.elavo-lens {
 }
 
 .elavo-lens-grid label {
-  font-size: 12px;
+  font-size: 11px;
 }

@@ -14,10 +14,98 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 const APP_ID: &str = "io.elavo.Lens";
 const STYLE: &str = include_str!("style.css");
-const WIDTH: i32 = 680;
+/// Sized so Lens, with the Applications view open, fits a 1366x768 screen
+/// between the panel and the Dock.
+const WIDTH: i32 = 560;
 const MAX_APPLICATIONS: usize = 8;
-const GRID_ICON: i32 = 56;
-const GRID_COLUMNS: u32 = 6;
+const GRID_ICON: i32 = 44;
+const GRID_COLUMNS: u32 = 7;
+const LIST_HEIGHT: i32 = 360;
+const GRID_HEIGHT: i32 = 330;
+/// Keeps a dragged Lens this far inside the screen edges.
+const EDGE: f64 = 8.0;
+/// Corner radii of the bar and the results card, matched by style.css.
+const BAR_RADIUS: i32 = 22;
+const RESULTS_RADIUS: i32 = 18;
+
+/// The category pills above the Applications grid, in order, with the
+/// freedesktop main categories each one covers. An application in several
+/// appears under each. Pills with no applications are not shown.
+const CATEGORIES: &[(&str, &[&str])] = &[
+    ("Productivity", &["Office"]),
+    ("Internet", &["Network"]),
+    ("Media", &["AudioVideo", "Audio", "Video"]),
+    ("Graphics", &["Graphics"]),
+    ("Games", &["Game"]),
+    ("Developer", &["Development"]),
+    ("Education", &["Education", "Science"]),
+    ("Utilities", &["Utility"]),
+    ("System", &["System", "Settings"]),
+];
+
+/// Whether `app` belongs under the pill `label`.
+fn in_category(app: &AppEntry, label: &str) -> bool {
+    let Some((_, wanted)) = CATEGORIES.iter().find(|(l, _)| *l == label) else {
+        return false;
+    };
+    let categories = app.info.categories();
+    let categories = categories.as_deref().unwrap_or_default();
+    categories
+        .split(';')
+        .any(|c| wanted.iter().any(|w| w.eq_ignore_ascii_case(c.trim())))
+}
+
+/// Where Lens sits when it has not been dragged: centered, a fifth of the
+/// way down, but not under the panel.
+fn default_origin(screen_w: f64, screen_h: f64) -> (f64, f64) {
+    (
+        (screen_w - f64::from(WIDTH)) / 2.0,
+        (screen_h * 0.2).clamp(72.0, 200.0),
+    )
+}
+
+/// Keep the bar on screen: `x`, `y` are the column's top-left corner.
+fn clamp_origin(x: f64, y: f64, screen_w: f64, screen_h: f64, bar_h: f64) -> (f64, f64) {
+    let max_x = (screen_w - f64::from(WIDTH) - EDGE).max(EDGE);
+    let max_y = (screen_h - bar_h - EDGE).max(EDGE);
+    (x.clamp(EDGE, max_x), y.clamp(EDGE, max_y))
+}
+
+/// `org.gnome.desktop.interface` `color-scheme`. Only `prefer-dark` is dark.
+fn scheme_is_dark(value: &str) -> bool {
+    value == "prefer-dark"
+}
+
+/// Load the theme's dark sheet while the color scheme is dark, and switch
+/// when it changes, as the panel and the Dock do.
+fn follow_color_scheme() {
+    let Some(source) = gio::SettingsSchemaSource::default() else {
+        return;
+    };
+    let Some(schema) = source.lookup("org.gnome.desktop.interface", true) else {
+        return;
+    };
+    if !schema.has_key("color-scheme") {
+        return;
+    }
+    let desktop = gio::Settings::new("org.gnome.desktop.interface");
+    let apply = {
+        let desktop = desktop.clone();
+        move || {
+            if let Some(settings) = gtk::Settings::default() {
+                settings.set_gtk_application_prefer_dark_theme(scheme_is_dark(
+                    desktop.string("color-scheme").as_str(),
+                ));
+            }
+        }
+    };
+    apply();
+    desktop.connect_changed(Some("color-scheme"), move |_, _| apply());
+    thread_local! {
+        static HELD: RefCell<Option<gio::Settings>> = const { RefCell::new(None) };
+    }
+    HELD.with(|held| *held.borrow_mut() = Some(desktop));
+}
 
 #[derive(Clone)]
 enum Action {
@@ -56,6 +144,13 @@ struct Lens {
     entry: gtk::Entry,
     apps_button: gtk::ToggleButton,
     results: gtk::Box,
+    pills: gtk::Box,
+    pill_scroller: gtk::ScrolledWindow,
+    /// The chosen category pill; `None` is All.
+    category: RefCell<Option<&'static str>>,
+    /// How far the column has been dragged from where it starts.
+    offset: Cell<(f64, f64)>,
+    drag_start: Cell<(f64, f64)>,
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
     grid: gtk::FlowBox,
@@ -93,6 +188,8 @@ impl Lens {
         }
         window.set_keyboard_mode(KeyboardMode::Exclusive);
 
+        follow_color_scheme();
+
         let entry = gtk::Entry::builder()
             .placeholder_text("Search")
             .hexpand(true)
@@ -110,7 +207,7 @@ impl Lens {
         bar.append(
             &gtk::Image::builder()
                 .icon_name("system-search-symbolic")
-                .pixel_size(22)
+                .pixel_size(18)
                 .build(),
         );
         bar.append(&entry);
@@ -123,7 +220,7 @@ impl Lens {
         let list_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
-            .max_content_height(520)
+            .max_content_height(LIST_HEIGHT)
             .child(&list)
             .build();
 
@@ -132,14 +229,27 @@ impl Lens {
             .homogeneous(true)
             .min_children_per_line(GRID_COLUMNS)
             .max_children_per_line(GRID_COLUMNS)
+            .row_spacing(2)
+            .column_spacing(2)
             .selection_mode(gtk::SelectionMode::Single)
             .activate_on_single_click(true)
             .valign(gtk::Align::Start)
             .build();
         let grid_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .min_content_height(460)
+            .min_content_height(GRID_HEIGHT)
+            .max_content_height(GRID_HEIGHT)
             .child(&grid)
+            .build();
+
+        let pills = gtk::Box::builder()
+            .css_classes(["elavo-lens-pills"])
+            .spacing(6)
+            .build();
+        let pill_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .child(&pills)
             .build();
 
         let results = gtk::Box::builder()
@@ -148,12 +258,13 @@ impl Lens {
             .visible(false)
             .build();
         results.append(&list_scroller);
+        results.append(&pill_scroller);
         results.append(&grid_scroller);
 
         let column = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["elavo-lens-column"])
-            .halign(gtk::Align::Center)
+            .halign(gtk::Align::Start)
             .valign(gtk::Align::Start)
             .width_request(WIDTH)
             .build();
@@ -161,7 +272,6 @@ impl Lens {
         column.append(&results);
 
         let root = gtk::Box::builder().hexpand(true).vexpand(true).build();
-        column.set_hexpand(true);
         root.append(&column);
         window.set_child(Some(&root));
 
@@ -175,6 +285,11 @@ impl Lens {
             entry,
             apps_button,
             results,
+            pills,
+            pill_scroller,
+            category: RefCell::new(None),
+            offset: Cell::new((0.0, 0.0)),
+            drag_start: Cell::new((0.0, 0.0)),
             list,
             list_scroller,
             grid,
@@ -184,6 +299,7 @@ impl Lens {
             dragging: Cell::new(false),
         });
         lens.connect(&root);
+        lens.connect_move(&root);
         lens.sync_blur();
         lens
     }
@@ -203,7 +319,7 @@ impl Lens {
                 bounds.y().round() as i32,
                 bounds.width().round().max(0.0) as i32,
                 bounds.height().round().max(0.0) as i32,
-                27,
+                BAR_RADIUS,
             ));
         }
         if self.results.is_visible() && !self.dragging.get() {
@@ -213,7 +329,7 @@ impl Lens {
                     bounds.y().round() as i32,
                     bounds.width().round().max(0.0) as i32,
                     bounds.height().round().max(0.0) as i32,
-                    22,
+                    RESULTS_RADIUS,
                 ));
             }
         }
@@ -248,6 +364,7 @@ impl Lens {
         self.window
             .add_tick_callback(move |_, _| match weak.upgrade() {
                 Some(lens) => {
+                    lens.place();
                     lens.sync_blur();
                     glib::ControlFlow::Continue
                 }
@@ -288,7 +405,10 @@ impl Lens {
                 return true;
             };
             let query = s.entry.text();
-            s.grid_app(child).is_some_and(|app| app.matches(&query))
+            let category = *s.category.borrow();
+            s.grid_app(child).is_some_and(|app| {
+                app.matches(&query) && category.is_none_or(|c| in_category(&app, c))
+            })
         });
 
         let weak = Rc::downgrade(self);
@@ -327,6 +447,112 @@ impl Lens {
             }
         });
         root.add_controller(click);
+    }
+
+    /// Drag the bar to move Lens. A press on the field or the button stays
+    /// theirs. A double click on the bar puts Lens back where it starts.
+    fn connect_move(self: &Rc<Self>, root: &gtk::Box) {
+        let drag = gtk::GestureDrag::new();
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_begin(move |gesture, x, y| {
+            let Some(s) = weak.upgrade() else {
+                return;
+            };
+            let on_control = s.bar.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| {
+                w.is_ancestor(&s.entry)
+                    || w == *s.entry.upcast_ref::<gtk::Widget>()
+                    || w.is_ancestor(&s.apps_button)
+                    || w == *s.apps_button.upcast_ref::<gtk::Widget>()
+            });
+            if on_control {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            s.drag_start.set(s.offset.get());
+        });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_update(move |_, dx, dy| {
+            if let Some(s) = weak.upgrade() {
+                let (sx, sy) = s.drag_start.get();
+                s.offset.set((sx + dx, sy + dy));
+                s.place();
+            }
+        });
+        self.bar.add_controller(drag);
+
+        let reset = gtk::GestureClick::new();
+        let weak = Rc::downgrade(self);
+        reset.connect_pressed(move |_, presses, _, _| {
+            if presses == 2 {
+                if let Some(s) = weak.upgrade() {
+                    s.offset.set((0.0, 0.0));
+                    s.place();
+                }
+            }
+        });
+        self.bar.add_controller(reset);
+        let _ = root;
+    }
+
+    /// Position the column from its offset, keeping the bar on screen. The
+    /// stored offset is clamped too, so dragging back from an edge moves at once.
+    fn place(&self) {
+        let Some(root) = self.window.child() else {
+            return;
+        };
+        let (w, h) = (f64::from(root.width()), f64::from(root.height()));
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let (dx, dy) = self.offset.get();
+        let (x0, y0) = default_origin(w, h);
+        let bar_h = f64::from(self.bar.height().max(1));
+        let (x, y) = clamp_origin(x0 + dx, y0 + dy, w, h, bar_h);
+        self.offset.set((x - x0, y - y0));
+        self.column.set_margin_start(x.round() as i32);
+        self.column.set_margin_top(y.round() as i32);
+    }
+
+    /// One pill for All and one for each category that has applications.
+    fn populate_pills(self: &Rc<Self>) {
+        while let Some(child) = self.pills.first_child() {
+            self.pills.remove(&child);
+        }
+        let chosen = *self.category.borrow();
+        let present: Vec<&'static str> = CATEGORIES
+            .iter()
+            .map(|(label, _)| *label)
+            .filter(|label| self.apps.borrow().iter().any(|a| in_category(a, label)))
+            .collect();
+        let chosen = chosen.filter(|c| present.contains(c));
+        self.category.replace(chosen);
+
+        let mut group: Option<gtk::ToggleButton> = None;
+        for label in std::iter::once(None).chain(present.into_iter().map(Some)) {
+            let pill = gtk::ToggleButton::builder()
+                .label(label.unwrap_or("All"))
+                .focusable(false)
+                .active(label == chosen)
+                .build();
+            if let Some(first) = group.as_ref() {
+                pill.set_group(Some(first));
+            } else {
+                group = Some(pill.clone());
+            }
+            let weak = Rc::downgrade(self);
+            pill.connect_toggled(move |pill| {
+                if !pill.is_active() {
+                    return;
+                }
+                if let Some(s) = weak.upgrade() {
+                    s.category.replace(label);
+                    s.grid.invalidate_filter();
+                    s.grid.unselect_all();
+                    s.grid_scroller.vadjustment().set_value(0.0);
+                }
+            });
+            self.pills.append(&pill);
+        }
     }
 
     fn on_key(&self, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
@@ -390,7 +616,7 @@ impl Lens {
         for app in self.apps.borrow().iter() {
             let tile = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
-                .spacing(6)
+                .spacing(4)
                 .name(app.id.as_str())
                 .tooltip_text(app.name.as_str())
                 .build();
@@ -400,7 +626,7 @@ impl Lens {
                 &gtk::Label::builder()
                     .label(app.name.as_str())
                     .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .max_width_chars(12)
+                    .max_width_chars(9)
                     .justify(gtk::Justification::Center)
                     .build(),
             );
@@ -451,7 +677,7 @@ impl Lens {
             .css_classes(["elavo-lens-title"])
             .build();
         self.row(
-            app_image(app, 32),
+            app_image(app, 28),
             &title,
             app.generic_name.as_deref(),
             Action::Launch(app.clone()),
@@ -541,6 +767,7 @@ impl Lens {
     fn refresh(&self) {
         let apps_mode = self.apps_button.is_active();
         self.list_scroller.set_visible(!apps_mode);
+        self.pill_scroller.set_visible(apps_mode);
         self.grid_scroller.set_visible(apps_mode);
         if apps_mode {
             self.grid.invalidate_filter();
@@ -572,7 +799,7 @@ impl Lens {
                 .build();
             let icon = gtk::Image::builder()
                 .icon_name("accessories-calculator-symbolic")
-                .pixel_size(32)
+                .pixel_size(28)
                 .build();
             self.row(
                 icon,
@@ -671,10 +898,11 @@ impl Lens {
         self.hide();
     }
 
-    fn show(&self, applications: bool) {
+    fn show(self: &Rc<Self>, applications: bool) {
         self.apps
             .replace(load_applications().shown().cloned().collect());
         self.populate_grid();
+        self.populate_pills();
         self.entry.set_text("");
         if self.apps_button.is_active() == applications {
             self.refresh();
@@ -690,7 +918,7 @@ impl Lens {
         self.come_back();
     }
 
-    fn toggle(&self, applications: bool) {
+    fn toggle(self: &Rc<Self>, applications: bool) {
         if !self.window.is_visible() {
             self.show(applications);
         } else if applications && !self.apps_button.is_active() {
@@ -736,4 +964,43 @@ fn main() -> glib::ExitCode {
         glib::ExitCode::SUCCESS
     });
     app.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_prefer_dark_is_dark() {
+        assert!(scheme_is_dark("prefer-dark"));
+        assert!(!scheme_is_dark("prefer-light"));
+        assert!(!scheme_is_dark("default"));
+        assert!(!scheme_is_dark(""));
+    }
+
+    #[test]
+    fn starts_centered_below_the_panel_on_a_small_screen() {
+        let (x, y) = default_origin(1366.0, 768.0);
+        assert_eq!(x, (1366.0 - f64::from(WIDTH)) / 2.0);
+        assert!((150.0..=160.0).contains(&y));
+        assert_eq!(default_origin(1366.0, 300.0).1, 72.0);
+        assert_eq!(default_origin(2560.0, 1600.0).1, 200.0);
+    }
+
+    #[test]
+    fn a_drag_keeps_the_bar_on_screen() {
+        let bar = 44.0;
+        assert_eq!(clamp_origin(-500.0, -500.0, 1366.0, 768.0, bar), (EDGE, EDGE));
+        let (x, y) = clamp_origin(5000.0, 5000.0, 1366.0, 768.0, bar);
+        assert_eq!(x, 1366.0 - f64::from(WIDTH) - EDGE);
+        assert_eq!(y, 768.0 - bar - EDGE);
+    }
+
+    #[test]
+    fn every_pill_names_a_category() {
+        for (label, categories) in CATEGORIES {
+            assert!(!label.is_empty());
+            assert!(!categories.is_empty());
+        }
+    }
 }
