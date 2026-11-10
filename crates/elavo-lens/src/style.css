@@ -163,3 +163,17 @@ window.elavo-lens {
   background-color: var(--accent-bg-color, @theme_selected_bg_color);
   color: var(--accent-fg-color, @theme_selected_fg_color);
 }
+
+/* While Lens is dragged, the blur is off, since the compositor's blur would
+   trail behind, and the bar and results are opaque. They turn opaque at once
+   on the press and fade back to see-through after the drop. */
+.elavo-lens-bar,
+.elavo-lens-results {
+  transition: background-color 150ms ease-out;
+}
+
+.elavo-lens-moving .elavo-lens-bar,
+.elavo-lens-moving .elavo-lens-results {
+  background-color: @theme_bg_color;
+  transition: none;
+}

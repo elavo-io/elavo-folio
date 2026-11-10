@@ -31,6 +31,9 @@ const EDGE: f64 = 8.0;
 /// pills), measured at 1366x768. Lens keeps this much on screen wherever it
 /// is dragged, so the results never open past the bottom edge.
 const PANEL_HEIGHT: f64 = 430.0;
+
+/// The App Launcher opens Lens itself, so Lens does not list it.
+const LAUNCHER: &str = "io.elavo.AppLauncher.desktop";
 /// Corner radii of the bar and the results card, matched by style.css.
 const BAR_RADIUS: i32 = 22;
 const RESULTS_RADIUS: i32 = 18;
@@ -214,6 +217,10 @@ struct Lens {
     /// How far the column has been dragged from where it starts.
     offset: Cell<(f64, f64)>,
     drag_start: Cell<(f64, f64)>,
+    /// A drag that started on the bar is under way.
+    moving: Cell<bool>,
+    /// The dragged bar and results have turned opaque and the blur is off.
+    lifted: Cell<bool>,
     /// A saved position still to be turned into an offset, once the
     /// screen size is known.
     saved_position: Cell<Option<(f64, f64)>>,
@@ -359,6 +366,8 @@ impl Lens {
             category: RefCell::new(None),
             offset: Cell::new((0.0, 0.0)),
             drag_start: Cell::new((0.0, 0.0)),
+            moving: Cell::new(false),
+            lifted: Cell::new(false),
             saved_position: Cell::new(load_position()),
             list,
             list_scroller,
@@ -379,7 +388,7 @@ impl Lens {
     /// layer around them stays clear. The panel does not use this.
     fn sync_blur(&self) {
         let mut parts = Vec::new();
-        let bar = if self.dragging.get() {
+        let bar = if self.dragging.get() || self.lifted.get() {
             None
         } else {
             self.bar.compute_bounds(&self.window)
@@ -393,7 +402,7 @@ impl Lens {
                 BAR_RADIUS,
             ));
         }
-        if self.results.is_visible() && !self.dragging.get() {
+        if self.results.is_visible() && !self.dragging.get() && !self.lifted.get() {
             if let Some(bounds) = self.results.compute_bounds(&self.window) {
                 parts.push((
                     bounds.x().round() as i32,
@@ -522,28 +531,40 @@ impl Lens {
 
     /// Drag the bar to move Lens. A press on the field or the button stays
     /// theirs. A double click on the bar puts Lens back where it starts.
+    ///
+    /// The drag is read on the fullscreen root, which never moves. Read on
+    /// the bar itself, each step would move the bar under the pointer and
+    /// change the next step's offset, and Lens would shake.
     fn connect_move(self: &Rc<Self>, root: &gtk::Box) {
         let drag = gtk::GestureDrag::new();
         let weak = Rc::downgrade(self);
+        let root_ref = root.downgrade();
         drag.connect_drag_begin(move |gesture, x, y| {
-            let Some(s) = weak.upgrade() else {
+            let (Some(s), Some(root)) = (weak.upgrade(), root_ref.upgrade()) else {
                 return;
             };
-            let on_control = s.bar.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| {
+            let point = gtk::graphene::Point::new(x as f32, y as f32);
+            let on_bar = s
+                .bar
+                .compute_bounds(&root)
+                .is_some_and(|b| b.contains_point(&point));
+            let on_control = root.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| {
                 w.is_ancestor(&s.entry)
                     || w == *s.entry.upcast_ref::<gtk::Widget>()
                     || w.is_ancestor(&s.apps_button)
                     || w == *s.apps_button.upcast_ref::<gtk::Widget>()
             });
-            if on_control {
+            if !on_bar || on_control {
                 gesture.set_state(gtk::EventSequenceState::Denied);
                 return;
             }
+            s.moving.set(true);
             s.drag_start.set(s.offset.get());
+            s.lift();
         });
         let weak = Rc::downgrade(self);
         drag.connect_drag_update(move |_, dx, dy| {
-            if let Some(s) = weak.upgrade() {
+            if let Some(s) = weak.upgrade().filter(|s| s.moving.get()) {
                 let (sx, sy) = s.drag_start.get();
                 s.offset.set((sx + dx, sy + dy));
                 s.place();
@@ -555,12 +576,15 @@ impl Lens {
                 return;
             };
             // A press on the field or button, or a click, moved nothing.
-            if s.offset.get() == s.drag_start.get() {
+            if !s.moving.replace(false) {
                 return;
             }
-            s.remember_position();
+            s.drop_down();
+            if s.offset.get() != s.drag_start.get() {
+                s.remember_position();
+            }
         });
-        self.bar.add_controller(drag);
+        root.add_controller(drag);
 
         let reset = gtk::GestureClick::new();
         let weak = Rc::downgrade(self);
@@ -575,7 +599,6 @@ impl Lens {
             }
         });
         self.bar.add_controller(reset);
-        let _ = root;
     }
 
     /// Position the column from its offset, keeping the bar on screen. The
@@ -861,6 +884,23 @@ impl Lens {
         source
     }
 
+    /// The compositor's blur trails a moving surface, so from the press that
+    /// starts a drag, the blur is off and the bar and results are opaque.
+    fn lift(&self) {
+        self.lifted.set(true);
+        self.sync_blur();
+        self.column.add_css_class("elavo-lens-moving");
+    }
+
+    /// Undoes [`Lens::lift`] where the bar was dropped: the blur comes back
+    /// under the still opaque bar and results, which then fade back to
+    /// see-through.
+    fn drop_down(&self) {
+        self.lifted.set(false);
+        self.sync_blur();
+        self.column.remove_css_class("elavo-lens-moving");
+    }
+
     /// Lens covers the screen above the Dock. While an application is
     /// dragged out of it, Lens draws nothing, takes no input, and sits below
     /// the Dock's layer, so the drop reaches the Dock.
@@ -1058,8 +1098,13 @@ impl Lens {
     }
 
     fn show(self: &Rc<Self>, applications: bool) {
-        self.apps
-            .replace(load_applications().shown().cloned().collect());
+        self.apps.replace(
+            load_applications()
+                .shown()
+                .filter(|a| a.id != LAUNCHER)
+                .cloned()
+                .collect(),
+        );
         self.populate_grid();
         self.populate_pills();
         self.load_pages();
