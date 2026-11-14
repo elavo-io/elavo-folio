@@ -11,6 +11,7 @@ mod drag;
 mod dropdown;
 mod focus;
 mod folio;
+mod indicators;
 mod menu;
 mod panelcfg;
 mod registrar;

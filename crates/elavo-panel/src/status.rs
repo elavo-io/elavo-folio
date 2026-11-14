@@ -9,6 +9,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 use crate::control;
+use crate::indicators::{self, Kind};
 use crate::panelcfg;
 use crate::statusmenu;
 
@@ -54,6 +55,10 @@ pub struct Status {
     volume: Indicator,
     battery: Indicator,
     show_volume: Cell<bool>,
+    /// The battery level, shown beside its icon when `show_percentage` is on.
+    percentage: Cell<Option<f64>>,
+    show_percentage: Cell<bool>,
+    percent_labels: RefCell<Vec<glib::WeakRef<gtk::Label>>>,
     _watch: RefCell<Option<gio::FileMonitor>>,
 }
 
@@ -65,13 +70,20 @@ impl Status {
             volume: Indicator::default(),
             battery: Indicator::default(),
             show_volume: Cell::new(panelcfg::show_volume()),
+            percentage: Cell::new(None),
+            show_percentage: Cell::new(panelcfg::show_battery_percentage()),
+            percent_labels: RefCell::default(),
             _watch: RefCell::default(),
         });
         let weak = Rc::downgrade(&status);
-        status._watch.replace(panelcfg::watch(move |shown| {
+        status._watch.replace(panelcfg::watch(move || {
             if let Some(status) = weak.upgrade() {
-                status.show_volume.set(shown);
+                status.show_volume.set(panelcfg::show_volume());
                 status.reveal_volume();
+                status
+                    .show_percentage
+                    .set(panelcfg::show_battery_percentage());
+                status.reveal_percentage();
             }
         }));
         glib::spawn_future_local(watch_network(Rc::downgrade(&status)));
@@ -88,16 +100,40 @@ impl Status {
             .css_classes(["elavo-panel-status"])
             .build();
         row.append(&statusmenu::row());
-        row.append(&self.network.image());
+        let network = self.network.image();
+        row.append(&indicators::button(&network, &network, Kind::Wifi));
         let volume = self.volume.image();
         volume.set_visible(self.show_volume.get() && volume.is_visible());
-        row.append(&volume);
-        row.append(&self.battery.image());
+        row.append(&indicators::button(&volume, &volume, Kind::Volume));
+        let battery = self.battery.image();
+        let battery_row = gtk::Box::builder().spacing(4).build();
+        let percent = gtk::Label::builder()
+            .css_classes(["elavo-panel-battery-percent"])
+            .build();
+        battery_row.append(&percent);
+        battery_row.append(&battery);
+        self.percent_labels.borrow_mut().push(percent.downgrade());
+        self.reveal_percentage();
+        row.append(&indicators::button(&battery_row, &battery, Kind::Battery));
         row.append(&control::button());
         row.append(&search_button());
         clock.set_valign(gtk::Align::Center);
         row.append(clock);
         row
+    }
+
+    fn reveal_percentage(&self) {
+        let text = self
+            .percentage
+            .get()
+            .filter(|_| self.show_percentage.get() && self.battery.icon.borrow().is_some())
+            .map(|level| format!("{}%", level.round() as i64));
+        let mut labels = self.percent_labels.borrow_mut();
+        labels.retain(|l| l.upgrade().is_some());
+        for label in labels.iter().filter_map(|l| l.upgrade()) {
+            label.set_label(text.as_deref().unwrap_or(""));
+            label.set_visible(text.is_some());
+        }
     }
 
     fn reveal_volume(&self) {
@@ -217,6 +253,8 @@ async fn watch_battery(status: std::rc::Weak<Status>) {
         let present: bool = property(proxy, "IsPresent").unwrap_or(false);
         let icon: Option<String> = property(proxy, "IconName").filter(|s: &String| !s.is_empty());
         status.battery.set(if present { icon } else { None });
+        status.percentage.set(property(proxy, "Percentage"));
+        status.reveal_percentage();
     };
     update(&proxy);
     on_properties_changed(&proxy, update);

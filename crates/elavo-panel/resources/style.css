@@ -210,3 +210,80 @@ menubar.elavo-panel-appmenu > item:selected {
 .elavo-panel-menu-popover contents {
   min-width: 220px;
 }
+
+/* Wi-Fi, volume, and battery open menus. The icons keep the 16px width of
+   the indicators they replaced; the pill reaches 4px past each side. */
+.elavo-panel-bar menubutton.elavo-panel-indicator > button {
+  padding: 0 4px;
+  min-width: 16px;
+}
+
+.elavo-panel-battery-percent {
+  font-weight: 500;
+  font-feature-settings: "tnum";
+}
+
+/* The menus use the theme's menu shape: 12px corners, 6px in, around
+   6px item corners, so the corners stay concentric. */
+.elavo-indicator-head {
+  min-height: 30px;
+  padding: 0 10px;
+  font-weight: 700;
+}
+
+.elavo-indicator-head .elavo-indicator-percent {
+  font-weight: normal;
+  font-feature-settings: "tnum";
+  opacity: 0.7;
+}
+
+.elavo-indicator-caption {
+  padding: 2px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+.elavo-indicator-head + .elavo-indicator-caption {
+  font-weight: normal;
+  font-size: 12px;
+}
+
+.elavo-indicator-menu separator {
+  margin: 5px 6px;
+  background-color: alpha(currentColor, 0.12);
+}
+
+.elavo-panel-bar popover .elavo-indicator-menu button.elavo-indicator-item {
+  min-height: 26px;
+  padding: 0 10px 0 6px;
+  margin: 0;
+  border: none;
+  border-radius: 6px;
+  font-weight: normal;
+}
+
+.elavo-panel-bar popover .elavo-indicator-menu button.elavo-indicator-plain {
+  padding-left: 30px;
+}
+
+.elavo-panel-bar popover .elavo-indicator-menu button.elavo-indicator-item:hover {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+}
+
+.elavo-indicator-volume {
+  padding: 0 6px 4px;
+}
+
+.elavo-panel-bar popover .elavo-indicator-menu button.elavo-indicator-mute {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+}
+
+.elavo-panel-bar popover .elavo-indicator-menu button.elavo-indicator-mute:checked {
+  background-color: alpha(currentColor, 0.16);
+}
