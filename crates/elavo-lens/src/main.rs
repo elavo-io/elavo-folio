@@ -236,6 +236,9 @@ struct Lens {
     bar: gtk::Box,
     blur: RefCell<Option<elavo_common::blur::BackgroundBlur>>,
     blur_parts: RefCell<Vec<BlurPart>>,
+    /// The column has been moved to its spot once. Until then it sits at
+    /// the window's top-left corner, so it is not drawn or blurred.
+    placed: Cell<bool>,
     entry: gtk::Entry,
     apps_button: gtk::ToggleButton,
     results: gtk::Box,
@@ -401,6 +404,7 @@ impl Lens {
             bar,
             blur: RefCell::new(None),
             blur_parts: RefCell::default(),
+            placed: Cell::new(false),
             entry,
             apps_button,
             results,
@@ -427,6 +431,9 @@ impl Lens {
             scan_started: Cell::new(false),
             scan_serial: Cell::new(0),
         });
+        // The first frame is laid out before the window has a size, with
+        // the column at the top-left corner. [`Lens::place`] shows it.
+        lens.column.set_opacity(0.0);
         lens.connect(&root);
         lens.connect_move(&root);
         lens.sync_blur();
@@ -437,7 +444,8 @@ impl Lens {
     /// layer around them stays clear. The panel does not use this.
     fn sync_blur(&self) {
         let mut parts = Vec::new();
-        let bar = if self.dragging.get() || self.lifted.get() {
+        let hidden = self.dragging.get() || self.lifted.get() || !self.placed.get();
+        let bar = if hidden {
             None
         } else {
             self.bar.compute_bounds(&self.window)
@@ -451,7 +459,7 @@ impl Lens {
                 BAR_RADIUS,
             ));
         }
-        if self.results.is_visible() && !self.dragging.get() && !self.lifted.get() {
+        if self.results.is_visible() && !hidden {
             if let Some(bounds) = self.results.compute_bounds(&self.window) {
                 parts.push((
                     bounds.x().round() as i32,
@@ -489,12 +497,15 @@ impl Lens {
         });
         // Bounds are only known after layout, which runs after the calls
         // above. Runs only while mapped; unchanged parts are not resent.
+        // The blur reads the last frame's layout, so it is sent before
+        // place() moves the column: on the frame that first places it, the
+        // bounds would still be at the top-left corner.
         let weak = Rc::downgrade(self);
         self.window
             .add_tick_callback(move |_, _| match weak.upgrade() {
                 Some(lens) => {
-                    lens.place();
                     lens.sync_blur();
+                    lens.place();
                     glib::ControlFlow::Continue
                 }
                 None => glib::ControlFlow::Break,
@@ -675,6 +686,9 @@ impl Lens {
         self.offset.set((x - x0, y - y0));
         self.column.set_margin_start(x.round() as i32);
         self.column.set_margin_top(y.round() as i32);
+        if !self.placed.replace(true) {
+            self.column.set_opacity(1.0);
+        }
     }
 
     /// Save where the column is now, so Lens opens there next time.
