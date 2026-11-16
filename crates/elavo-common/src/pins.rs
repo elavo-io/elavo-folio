@@ -12,7 +12,9 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 /// Files. Always the first pin, and not one the person can move or remove.
-pub const FILES: &str = "org.gnome.Nautilus.desktop";
+pub const FILES: &str = "io.elavo.Files.desktop";
+/// The pin Files had while it was Nautilus; saved pins move to `FILES`.
+pub const OLD_FILES: &str = "org.gnome.Nautilus.desktop";
 /// Opens Lens on its applications grid. Placed to the right of Files until
 /// the person moves or removes it.
 pub const LAUNCHER: &str = "io.elavo.AppLauncher.desktop";
@@ -58,9 +60,9 @@ pub fn load_saved() -> Vec<String> {
     pins
 }
 
-/// `org.gnome.Nautilus.desktop` is index 0.
+/// `io.elavo.Files.desktop` is index 0, in place of Nautilus.
 pub fn lock_files(pins: &mut Vec<String>) {
-    pins.retain(|p| p != FILES);
+    pins.retain(|p| p != FILES && p != OLD_FILES);
     pins.insert(0, FILES.to_owned());
 }
 
@@ -146,5 +148,12 @@ mod tests {
         assert!(set_pin(&mut pins, "foot.desktop", false));
         assert_eq!(pins, [FILES, "a.desktop"]);
         assert!(!set_pin(&mut pins, "foot.desktop", false));
+    }
+
+    #[test]
+    fn nautilus_pin_becomes_files() {
+        let mut pins = parse("org.gnome.Nautilus.desktop\nfoot.desktop\n");
+        lock_files(&mut pins);
+        assert_eq!(pins, [FILES, "foot.desktop"]);
     }
 }
