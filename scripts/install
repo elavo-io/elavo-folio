@@ -32,7 +32,3 @@ install -Dm644 data/pam/elavo-lock "${dest}${sysconfdir}/pam.d/elavo-lock"
 install -Dm755 target/release/elavo-polkit-agent \
     "${dest}${prefix}/libexec/elavo-polkit-agent"
 
-# Nautilus 50 loads extensions only from <libdir>/nautilus/extensions-4.
-make -C extensions/nautilus-folio
-install -Dm755 extensions/nautilus-folio/libfolio-files.so \
-    "${dest}${prefix}/lib64/nautilus/extensions-4/libfolio-files.so"
