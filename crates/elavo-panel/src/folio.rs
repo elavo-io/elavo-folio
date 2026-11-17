@@ -19,11 +19,11 @@ use gtk::{gio, glib};
 pub const FILES: &str = "io.elavo.Files";
 
 const FILES_PATH: &str = "/io/elavo/Files";
-/// Undo and Redo on the desktop: its file operations still run through
-/// Nautilus's FileOperations2.
-const NAUTILUS: &str = "org.gnome.Nautilus";
-const FILE_OPS_PATH: &str = "/org/gnome/Nautilus/FileOperations2";
-const FILE_OPS_IFACE: &str = "org.gnome.Nautilus.FileOperations2";
+/// Undo and Redo on the desktop: Files' `io.elavo.Files.FileOperations`,
+/// whose history every Files window shares. Its `CanUndo`, `CanRedo`,
+/// `UndoLabel` and `RedoLabel` properties gray and name the items.
+const FILE_OPS_PATH: &str = "/io/elavo/Files/FileOperations";
+const FILE_OPS_IFACE: &str = "io.elavo.Files.FileOperations";
 const FILE_MANAGER: &str = "org.freedesktop.FileManager1";
 const FILE_MANAGER_PATH: &str = "/org/freedesktop/FileManager1";
 const DESKTOP_BUS: &str = "io.elavo.Desktop";
@@ -102,7 +102,7 @@ enum Route {
     /// `io.elavo.Files`). `win-*` act on the Files window focused last, or
     /// open one.
     Files(&'static str),
-    /// `org.gnome.Nautilus.FileOperations2`, for the desktop's own operations.
+    /// `io.elavo.Files.FileOperations`, for the desktop's own operations.
     FileOp(&'static str),
     Show(Place),
     /// A command of the desktop, via `io.elavo.Desktop`.
@@ -122,6 +122,54 @@ enum Needs {
     Two,
     /// Only for a focused window, which the desktop is not.
     Never,
+    /// Files' shared history has something to undo.
+    Undo,
+    /// Files' shared history has something to redo.
+    Redo,
+}
+
+/// Undo and Redo as Files last told: whether each can run, and its label
+/// (“Undo Move to Trash”).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UndoState {
+    can_undo: bool,
+    can_redo: bool,
+    undo_label: String,
+    redo_label: String,
+}
+
+impl Default for UndoState {
+    /// Files isn't running: nothing to undo.
+    fn default() -> Self {
+        Self {
+            can_undo: false,
+            can_redo: false,
+            undo_label: "Undo".to_owned(),
+            redo_label: "Redo".to_owned(),
+        }
+    }
+}
+
+impl UndoState {
+    /// Take in what a `PropertiesChanged` or `GetAll` reply says.
+    fn update(&mut self, props: &glib::Variant) {
+        for index in 0..props.n_children() {
+            let entry = props.child_value(index);
+            let (Some(name), Some(value)) = (
+                entry.child_value(0).get::<String>(),
+                entry.child_value(1).as_variant(),
+            ) else {
+                continue;
+            };
+            match name.as_str() {
+                "CanUndo" => self.can_undo = value.get().unwrap_or(false),
+                "CanRedo" => self.can_redo = value.get().unwrap_or(false),
+                "UndoLabel" => self.undo_label = value.get().unwrap_or_else(|| "Undo".to_owned()),
+                "RedoLabel" => self.redo_label = value.get().unwrap_or_else(|| "Redo".to_owned()),
+                _ => {}
+            }
+        }
+    }
 }
 
 struct Item {
@@ -256,8 +304,22 @@ const ITEMS: &[Item] = &[
         Route::Desktop("move-to-trash"),
     ),
     item("File", 4, "find", "Find", Always, Files("win-search")),
-    item("Edit", 0, "undo", "Undo", Always, Route::FileOp("Undo")),
-    item("Edit", 0, "redo", "Redo", Always, Route::FileOp("Redo")),
+    item(
+        "Edit",
+        0,
+        "undo",
+        "Undo",
+        Needs::Undo,
+        Route::FileOp("Undo"),
+    ),
+    item(
+        "Edit",
+        0,
+        "redo",
+        "Redo",
+        Needs::Redo,
+        Route::FileOp("Redo"),
+    ),
     item("Edit", 1, "cut", "Cut", Desktop, Route::Desktop("cut")),
     item("Edit", 1, "copy", "Copy", Desktop, Route::Desktop("copy")),
     item(
@@ -401,6 +463,10 @@ pub struct Folio {
     desktop_signals: RefCell<Vec<gio::SignalSubscription>>,
     desktop_focus: RefCell<Option<FocusHandler>>,
     wm: RefCell<Option<WmHandler>>,
+    undo: RefCell<UndoState>,
+    /// The Edit menu's Undo and Redo, relabeled as the history changes.
+    undo_section: RefCell<Option<gio::Menu>>,
+    files_signals: RefCell<Vec<gio::SignalSubscription>>,
 }
 
 impl Folio {
@@ -414,11 +480,15 @@ impl Folio {
             desktop_signals: RefCell::new(Vec::new()),
             desktop_focus: RefCell::new(None),
             wm: RefCell::new(None),
+            undo: RefCell::default(),
+            undo_section: RefCell::new(None),
+            files_signals: RefCell::new(Vec::new()),
         });
         folio.build(window_list);
         folio.set_context(0);
         folio.refresh();
         folio.listen_desktop();
+        folio.listen_files();
         folio
     }
 
@@ -486,6 +556,8 @@ impl Folio {
                 Needs::Windows => files_windows > 0,
                 Needs::Two => files_windows >= 2,
                 Needs::Never => false,
+                Needs::Undo => self.undo.borrow().can_undo,
+                Needs::Redo => self.undo.borrow().can_redo,
             };
             self.set_enabled(item.id, enabled);
         }
@@ -648,6 +720,94 @@ impl Folio {
         });
     }
 
+    /// Follow Files' shared Undo history: its properties while it runs,
+    /// nothing to undo while it doesn't. Files isn't started for this.
+    fn listen_files(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let Ok(bus) = gio::bus_get_future(gio::BusType::Session).await else {
+                return;
+            };
+            let Some(folio) = weak.upgrade() else {
+                return;
+            };
+            let owner = Rc::downgrade(&folio);
+            let changed = bus.subscribe_to_signal(
+                Some(FILES),
+                Some("org.freedesktop.DBus.Properties"),
+                Some("PropertiesChanged"),
+                Some(FILE_OPS_PATH),
+                Some(FILE_OPS_IFACE),
+                gio::DBusSignalFlags::NONE,
+                move |signal| {
+                    let Some(folio) = owner.upgrade() else {
+                        return;
+                    };
+                    let params = signal.parameters;
+                    if params.n_children() > 1 {
+                        let mut state = folio.undo.borrow().clone();
+                        state.update(&params.child_value(1));
+                        folio.set_undo_state(state);
+                    }
+                },
+            );
+            folio.files_signals.borrow_mut().push(changed);
+            let appeared = Rc::downgrade(&folio);
+            let vanished = Rc::downgrade(&folio);
+            gio::bus_watch_name_on_connection(
+                &bus,
+                FILES,
+                gio::BusNameWatcherFlags::NONE,
+                move |bus, _, _| {
+                    let weak = appeared.clone();
+                    let bus = bus.clone();
+                    glib::spawn_future_local(async move {
+                        let reply = bus
+                            .call_future(
+                                Some(FILES),
+                                FILE_OPS_PATH,
+                                "org.freedesktop.DBus.Properties",
+                                "GetAll",
+                                Some(&(FILE_OPS_IFACE,).to_variant()),
+                                None,
+                                gio::DBusCallFlags::NO_AUTO_START,
+                                -1,
+                            )
+                            .await;
+                        let Some(folio) = weak.upgrade() else {
+                            return;
+                        };
+                        match reply {
+                            Ok(reply) => {
+                                let mut state = folio.undo.borrow().clone();
+                                state.update(&reply.child_value(0));
+                                folio.set_undo_state(state);
+                            }
+                            Err(err) => glib::g_warning!("elavo-panel", "files undo: {err}"),
+                        }
+                    });
+                },
+                move |_, _| {
+                    if let Some(folio) = vanished.upgrade() {
+                        folio.set_undo_state(UndoState::default());
+                    }
+                },
+            );
+        });
+    }
+
+    fn set_undo_state(&self, state: UndoState) {
+        if *self.undo.borrow() == state {
+            return;
+        }
+        self.set_enabled("undo", state.can_undo);
+        self.set_enabled("redo", state.can_redo);
+        if let Some(section) = self.undo_section.borrow().as_ref() {
+            fill_undo_section(section, &state);
+        }
+        self.undo.replace(state);
+    }
+
     fn build(self: &Rc<Self>, window_list: &gio::Menu) {
         let applications = applications_dir().is_some();
         for item in ITEMS {
@@ -686,6 +846,10 @@ impl Folio {
                         Some(&format!("folio.{}", item.id)),
                     );
                 }
+                if *menu_name == "Edit" && section == 0 {
+                    fill_undo_section(&section_menu, &self.undo.borrow());
+                    self.undo_section.replace(Some(section_menu.clone()));
+                }
                 if section_menu.n_items() > 0 {
                     submenu.append_section(None, &section_menu);
                 }
@@ -715,6 +879,17 @@ impl Folio {
             }
             Route::Disabled => {}
         }
+    }
+}
+
+/// The Edit menu's first section: Undo and Redo, named for what they do.
+fn fill_undo_section(section: &gio::Menu, state: &UndoState) {
+    section.remove_all();
+    for (label, action) in [
+        (&state.undo_label, "folio.undo"),
+        (&state.redo_label, "folio.redo"),
+    ] {
+        section.append(Some(&mnemonic(label)), Some(action));
     }
 }
 
@@ -791,15 +966,11 @@ fn file_op(method: &'static str) {
     glib::spawn_future_local(async move {
         let call = async {
             let bus = gio::bus_get_future(gio::BusType::Session).await?;
-            let parameters = if method == "EmptyTrash" {
-                (true,).to_variant()
-            } else {
-                glib::Variant::parse(None, "@a{sv} {}").map_err(|err| {
-                    glib::Error::new(gio::IOErrorEnum::InvalidArgument, err.message())
-                })?
-            };
+            // `(a{sv} platform_data)`: the arguments go in a tuple.
+            let parameters =
+                (std::collections::HashMap::<String, glib::Variant>::new(),).to_variant();
             bus.call_future(
-                Some(NAUTILUS),
+                Some(FILES),
                 FILE_OPS_PATH,
                 FILE_OPS_IFACE,
                 method,
@@ -811,7 +982,7 @@ fn file_op(method: &'static str) {
             .await
         };
         if let Err(err) = call.await {
-            glib::g_warning!("elavo-panel", "nautilus {method}: {err}");
+            glib::g_warning!("elavo-panel", "files {method}: {err}");
         }
     });
 }
@@ -962,6 +1133,64 @@ mod tests {
             let item = ITEMS.iter().find(|item| item.id == id).unwrap();
             assert!(matches!(item.route, Route::Files(_)), "{id}");
         }
+    }
+
+    #[test]
+    fn desktop_undo_goes_to_files() {
+        assert!(FILE_OPS_PATH.starts_with("/io/elavo/Files/"));
+        assert!(FILE_OPS_IFACE.starts_with(FILES));
+        for id in ["undo", "redo"] {
+            let item = ITEMS.iter().find(|item| item.id == id).unwrap();
+            assert!(matches!(item.route, Route::FileOp(_)), "{id}");
+        }
+    }
+
+    #[test]
+    fn undo_follows_what_files_says() {
+        let mut state = UndoState::default();
+        assert!(!state.can_undo && !state.can_redo);
+        assert_eq!(state.undo_label, "Undo");
+        let props = glib::Variant::parse(
+            None,
+            "{'CanUndo': <true>, 'UndoLabel': <'Undo Move to Trash'>, 'Other': <1>}",
+        )
+        .unwrap();
+        state.update(&props);
+        assert!(state.can_undo);
+        assert!(!state.can_redo);
+        assert_eq!(state.undo_label, "Undo Move to Trash");
+        assert_eq!(state.redo_label, "Redo");
+        let items = ITEMS
+            .iter()
+            .filter(|item| item.id == "undo" || item.id == "redo");
+        for item in items {
+            assert!(
+                matches!(item.needs, Needs::Undo | Needs::Redo),
+                "{}",
+                item.id
+            );
+        }
+    }
+
+    #[test]
+    fn undo_section_names_the_action() {
+        let section = gio::Menu::new();
+        let state = UndoState {
+            can_undo: true,
+            can_redo: true,
+            undo_label: "Undo Rename".to_owned(),
+            redo_label: "Redo Move to Trash".to_owned(),
+        };
+        fill_undo_section(&section, &state);
+        fill_undo_section(&section, &state);
+        assert_eq!(section.n_items(), 2);
+        let label = |i| {
+            section
+                .item_attribute_value(i, "label", None)
+                .and_then(|v| v.get::<String>())
+        };
+        assert_eq!(label(0).as_deref(), Some("Undo Rename"));
+        assert_eq!(label(1).as_deref(), Some("Redo Move to Trash"));
     }
 
     #[test]

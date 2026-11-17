@@ -24,12 +24,17 @@ const DRAG_SLOP: f64 = 8.0;
 const ICON_SIZE: i32 = 48;
 const ICON_MIME: &str = "application/x-elavo-desktop-icons";
 
-const FILE_OPS_BUS: &str = "org.gnome.Nautilus";
-const FILE_OPS_PATH: &str = "/org/gnome/Nautilus/FileOperations2";
-const FILE_OPS_IFACE: &str = "org.gnome.Nautilus.FileOperations2";
-const PREVIEW_BUS: &str = "org.gnome.NautilusPreviewer";
-const PREVIEW_PATH: &str = "/org/gnome/NautilusPreviewer";
-const PREVIEW_IFACE: &str = "org.gnome.NautilusPreviewer2";
+/// Elavo Files, started by D-Bus when it isn't running.
+const FILES_BUS: &str = "io.elavo.Files";
+const FILE_OPS_PATH: &str = "/io/elavo/Files/FileOperations";
+const FILE_OPS_IFACE: &str = "io.elavo.Files.FileOperations";
+const PREVIEW_PATH: &str = "/io/elavo/Files/Previewer";
+const PREVIEW_IFACE: &str = "io.elavo.Files.Previewer";
+/// How long Rename waits for Files before renaming here instead.
+const RENAME_TIMEOUT_MS: i32 = 3000;
+/// Longer than a key's repeat delay: Space presses further apart than this
+/// are separate presses, not one held down.
+const SPACE_REPEAT_US: i64 = 1_000_000;
 const FILE_MANAGER_BUS: &str = "org.freedesktop.FileManager1";
 const FILE_MANAGER_PATH: &str = "/org/freedesktop/FileManager1";
 
@@ -107,6 +112,8 @@ pub struct Desktop {
     /// Cells chosen at a drop, held until the copied files are listed.
     dropped: RefCell<HashMap<String, Slot>>,
     space_held: Cell<bool>,
+    /// When Space last went down here (`glib::monotonic_time`).
+    space_at: Cell<i64>,
     focused: Cell<bool>,
     focus_gen: Cell<u64>,
     rebuilding: Cell<bool>,
@@ -178,6 +185,7 @@ impl Desktop {
             thumbs: RefCell::new(None),
             dropped: RefCell::new(HashMap::new()),
             space_held: Cell::new(false),
+            space_at: Cell::new(0),
             focused: Cell::new(false),
             focus_gen: Cell::new(0),
             rebuilding: Cell::new(false),
@@ -1288,6 +1296,11 @@ impl Desktop {
                 self.paste(None);
                 return glib::Propagation::Stop;
             }
+            Key::z | Key::Z if ctrl => {
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+                self.undo(if shift { "Redo" } else { "Undo" });
+                return glib::Propagation::Stop;
+            }
             Key::Escape => {
                 let spread = self.model.borrow().spread().is_some();
                 self.model.borrow_mut().click_background();
@@ -1297,7 +1310,12 @@ impl Desktop {
                 true
             }
             Key::space if !ctrl => {
-                if !self.space_held.replace(true) {
+                // Held down, Space repeats. Quick Look's window takes the
+                // keyboard, so the release can go there instead: a press
+                // well after the last one is a new one all the same.
+                let now = glib::monotonic_time();
+                let last = self.space_at.replace(now);
+                if !self.space_held.replace(true) || now - last > SPACE_REPEAT_US {
                     self.quick_look();
                 }
                 return glib::Propagation::Stop;
@@ -1324,6 +1342,8 @@ impl Desktop {
             "cut" => self.copy_selection(true),
             "copy" => self.copy_selection(false),
             "paste" => self.paste(None),
+            "undo" => self.undo("Undo"),
+            "redo" => self.undo("Redo"),
             "select-all" => {
                 self.model.borrow_mut().select_all();
                 self.paint_selection();
@@ -1339,12 +1359,49 @@ impl Desktop {
     fn new_folder(self: &Rc<Self>) {
         let name = new_folder_name(&self.model.borrow().file_names());
         let path = self.desktop_dir.join(&name);
-        if let Err(err) = gio::File::for_path(&path).make_directory(None::<&gio::Cancellable>) {
-            glib::g_warning!("elavo-desktop", "new folder: {err}");
+        let uri = gio::File::for_path(&path).uri().to_string();
+        let done = {
+            let this = Rc::downgrade(self);
+            move || {
+                if let Some(this) = this.upgrade() {
+                    *this.rename_after.borrow_mut() = Some(name.clone());
+                    this.reload();
+                }
+            }
+        };
+        let fallback = {
+            let done = done.clone();
+            move || match gio::File::for_path(&path).make_directory(None::<&gio::Cancellable>) {
+                Ok(()) => done(),
+                Err(err) => glib::g_warning!("elavo-desktop", "new folder: {err}"),
+            }
+        };
+        // Files makes it, so Undo can take it away again.
+        let Some(conn) = self.conn.borrow().clone() else {
+            fallback();
             return;
-        }
-        *self.rename_after.borrow_mut() = Some(name);
-        self.reload();
+        };
+        conn.call(
+            Some(FILES_BUS),
+            FILE_OPS_PATH,
+            FILE_OPS_IFACE,
+            "CreateFolder",
+            Some(&(uri, platform_data()).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            -1,
+            None::<&gio::Cancellable>,
+            move |result| match result {
+                Ok(_) => done(),
+                Err(err) if is_remote_file_error(&err) => {
+                    glib::g_warning!("elavo-desktop", "new folder: {err}");
+                }
+                Err(err) => {
+                    glib::g_warning!("elavo-desktop", "CreateFolder: {err}");
+                    fallback();
+                }
+            },
+        );
     }
 
     fn start_rename(self: &Rc<Self>) {
@@ -1503,6 +1560,32 @@ impl Desktop {
             return false;
         }
         let src = gio::File::for_path(self.desktop_dir.join(from));
+        // Files renames it, so Undo can name it back; it answers within a
+        // moment, or the desktop renames it itself.
+        if let Some(conn) = self.conn.borrow().clone() {
+            let call = conn.call_sync(
+                Some(FILES_BUS),
+                FILE_OPS_PATH,
+                FILE_OPS_IFACE,
+                "RenameURI",
+                Some(&(src.uri().to_string(), typed, platform_data()).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                RENAME_TIMEOUT_MS,
+                None::<&gio::Cancellable>,
+            );
+            match call {
+                Ok(_) => {
+                    self.model.borrow_mut().rename_file(from, typed);
+                    return true;
+                }
+                Err(err) if is_remote_file_error(&err) => {
+                    glib::g_warning!("elavo-desktop", "rename: {err}");
+                    return false;
+                }
+                Err(err) => glib::g_warning!("elavo-desktop", "RenameURI: {err}"),
+            }
+        }
         match src.set_display_name(typed, None::<&gio::Cancellable>) {
             Ok(_) => {
                 self.model.borrow_mut().rename_file(from, typed);
@@ -1576,7 +1659,7 @@ impl Desktop {
         open_uri(file.uri().as_str());
     }
 
-    /// Sushi, the previewer Files uses for Quick Look. A second press closes it.
+    /// Files' Quick Look, in a window of its own. A second press closes it.
     fn quick_look(&self) {
         let uri = match self.model.borrow().preview_target() {
             Some(Id::File(name)) => gio::File::for_path(self.desktop_dir.join(name))
@@ -1589,11 +1672,11 @@ impl Desktop {
             return;
         };
         conn.call(
-            Some(PREVIEW_BUS),
+            Some(FILES_BUS),
             PREVIEW_PATH,
             PREVIEW_IFACE,
             "ShowFile",
-            Some(&(uri, "", true, "").to_variant()),
+            Some(&(uri, "", true).to_variant()),
             None,
             gio::DBusCallFlags::NONE,
             -1,
@@ -1606,10 +1689,10 @@ impl Desktop {
         );
     }
 
-    /// Copy, move, and trash go through Files' own file operations, so they
-    /// handle folders and name clashes the way Files does, show progress, and
-    /// can be undone from the panel's Edit menu. `fallback` runs if Files
-    /// cannot be reached.
+    /// Copy, move, trash and new folders go through Elavo Files' file
+    /// operations, so they handle folders and name clashes the way Files does,
+    /// show progress, and can be undone from the panel's Edit menu.
+    /// `fallback` runs if Files cannot be reached.
     fn file_operation(
         &self,
         method: &'static str,
@@ -1621,7 +1704,7 @@ impl Desktop {
             return;
         };
         conn.call(
-            Some(FILE_OPS_BUS),
+            Some(FILES_BUS),
             FILE_OPS_PATH,
             FILE_OPS_IFACE,
             method,
@@ -1634,6 +1717,32 @@ impl Desktop {
                 if let Err(err) = result {
                     glib::g_warning!("elavo-desktop", "{method}: {err}");
                     fallback();
+                }
+            },
+        );
+    }
+
+    /// Undo or Redo the most recent file operation. The history is Files',
+    /// shared with its windows, so this can undo what a Files window did.
+    /// With Files not running there is nothing to undo.
+    fn undo(&self, method: &'static str) {
+        let Some(conn) = self.conn.borrow().clone() else {
+            return;
+        };
+        conn.call(
+            Some(FILES_BUS),
+            FILE_OPS_PATH,
+            FILE_OPS_IFACE,
+            method,
+            Some(&(platform_data(),).to_variant()),
+            None,
+            // Starting Files would find an empty history.
+            gio::DBusCallFlags::NO_AUTO_START,
+            -1,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Err(err) = result {
+                    glib::g_warning!("elavo-desktop", "{method}: {err}");
                 }
             },
         );
@@ -2457,6 +2566,18 @@ fn platform_data() -> HashMap<String, glib::Variant> {
     HashMap::new()
 }
 
+/// Files answered, and the file operation itself failed (the name is taken,
+/// the folder is read-only): doing it here instead would fail the same way.
+/// Not reaching Files at all, or no answer in time, is not one of these.
+fn is_remote_file_error(err: &glib::Error) -> bool {
+    use gio::IOErrorEnum as E;
+    match err.kind::<E>() {
+        Some(E::TimedOut | E::Cancelled | E::Closed | E::BrokenPipe | E::DbusError) => false,
+        Some(_) => true,
+        None => false,
+    }
+}
+
 fn open_uri(uri: &str) {
     if let Err(err) = gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>) {
         glib::g_warning!("elavo-desktop", "open: {err}");
@@ -2508,4 +2629,23 @@ fn transfer(jobs: Vec<(String, String, bool)>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_file_errors_from_files_skip_the_fallback() {
+        let io = |code| glib::Error::new(code, "x");
+        assert!(is_remote_file_error(&io(gio::IOErrorEnum::Exists)));
+        assert!(is_remote_file_error(&io(
+            gio::IOErrorEnum::PermissionDenied
+        )));
+        assert!(!is_remote_file_error(&io(gio::IOErrorEnum::TimedOut)));
+        assert!(!is_remote_file_error(&glib::Error::new(
+            gio::DBusError::ServiceUnknown,
+            "x"
+        )));
+    }
 }

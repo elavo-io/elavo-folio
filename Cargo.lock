@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "elavo-desktop"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gio-unix",
  "glib-build-tools",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "elavo-panel"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "elavo-common",
  "glib-build-tools",
