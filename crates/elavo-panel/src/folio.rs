@@ -1,14 +1,13 @@
-//! Folio's own menus. The desktop, a Files window, and the shell windows
-//! named in `FOLIO_APPS` are one application here, so the bar keeps these
-//! menus instead of the focused window's. Any other application shows the
-//! menu it exports.
+//! Folio's own menus, for the desktop and the shell windows named in
+//! `FOLIO_APPS`. Folio is the Finder of Elavo, and Elavo Files is its file
+//! browser: a focused Files window shows Files' own exported menus under a
+//! menu titled Folio (see `appmenu.rs` and [`Folio::files_app_menu`]),
+//! and any other application shows the menu it exports.
 //!
-//! Nautilus exports almost none of its menu over D-Bus. Items that act on
-//! the focused window go through the Folio Files plugin
-//! (`io.elavo.FolioFiles`), which runs inside Nautilus and calls the
-//! window's own actions. With no Files window focused, the same file
-//! commands go to `elavo-desktop` (`io.elavo.Desktop`), which draws the
-//! Desktop folder and mounted volumes.
+//! With the desktop focused, file commands go to `elavo-desktop`
+//! (`io.elavo.Desktop`), which draws the Desktop folder and mounted
+//! volumes, and the rest go to Files (`io.elavo.Files`) as its
+//! `org.gtk.Actions`, which starts Files over D-Bus when it is not running.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -16,25 +15,26 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 
-pub const NAUTILUS: &str = "org.gnome.Nautilus";
+/// Elavo Files, Folio's file browser.
+pub const FILES: &str = "io.elavo.Files";
 
-const NAUTILUS_PATH: &str = "/org/gnome/Nautilus";
+const FILES_PATH: &str = "/io/elavo/Files";
+/// Undo and Redo on the desktop: its file operations still run through
+/// Nautilus's FileOperations2.
+const NAUTILUS: &str = "org.gnome.Nautilus";
 const FILE_OPS_PATH: &str = "/org/gnome/Nautilus/FileOperations2";
 const FILE_OPS_IFACE: &str = "org.gnome.Nautilus.FileOperations2";
 const FILE_MANAGER: &str = "org.freedesktop.FileManager1";
 const FILE_MANAGER_PATH: &str = "/org/freedesktop/FileManager1";
-const FOLIO_FILES: &str = "io.elavo.FolioFiles";
-const FOLIO_FILES_PATH: &str = "/io/elavo/FolioFiles";
 const DESKTOP_BUS: &str = "io.elavo.Desktop";
 const DESKTOP_PATH: &str = "/io/elavo/Desktop";
 const DESKTOP_IFACE: &str = "io.elavo.Desktop";
 
-/// Focused windows that show Folio's menus. Files is here because Nautilus
-/// does not export a menubar. The rest are shell surfaces that are Folio
-/// itself. A new application is not added: it exports its own menu, and the
-/// panel shows that.
+/// Focused windows that show Folio's menus: the shell surfaces that are
+/// Folio itself. Files is Folio too, but shows its own exported menus
+/// under a Folio menu. A new application is not added: it exports its own
+/// menu, and the panel shows that.
 const FOLIO_APPS: &[&str] = &[
-    NAUTILUS,
     "io.elavo.Desktop",
     "io.elavo.Panel",
     "io.elavo.PanelPreview",
@@ -51,7 +51,7 @@ pub fn keeps_one_window(app_id: &str) -> bool {
 }
 
 /// Nothing focused counts as the desktop, which is Folio. A focused window
-/// is Folio only when its id is in [`FOLIO_APPS`].
+/// shows Folio's own menus only when its id is in [`FOLIO_APPS`].
 pub fn is_folio(app_id: Option<&str>) -> bool {
     match app_id {
         None => true,
@@ -59,10 +59,15 @@ pub fn is_folio(app_id: Option<&str>) -> bool {
     }
 }
 
+/// A Files window.
+pub fn is_files(app_id: Option<&str>) -> bool {
+    app_id == Some(FILES)
+}
+
 /// A window Hide Others leaves up: Files, or one of the shell surfaces in
 /// [`FOLIO_APPS`].
 pub fn is_folio_window(app_id: &str) -> bool {
-    FOLIO_APPS.contains(&app_id)
+    app_id == FILES || FOLIO_APPS.contains(&app_id)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,30 +89,24 @@ enum Place {
     Documents,
     Desktop,
     Downloads,
+    Home,
     Computer,
     Network,
     Applications,
-    /// Connect to Server opens the same screen as Computer.
-    Connect,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum Route {
     About,
-    /// An `org.gtk.Actions` action on `org.gnome.Nautilus`.
-    Nautilus(&'static str),
-    /// `org.gnome.Nautilus.FileOperations2`. `EmptyTrash` asks first.
+    /// An application action of Files (`org.gtk.Actions` on
+    /// `io.elavo.Files`). `win-*` act on the Files window focused last, or
+    /// open one.
+    Files(&'static str),
+    /// `org.gnome.Nautilus.FileOperations2`, for the desktop's own operations.
     FileOp(&'static str),
     Show(Place),
-    /// `win.go-home` in the focused Nautilus window, or a new window otherwise.
-    Home,
-    /// An action on the focused Nautilus window, via `io.elavo.FolioFiles`.
-    /// `folio.previous-tab` and `folio.next-tab` switch tabs in the plugin.
-    Files(&'static str),
-    /// An action on the desktop, via `io.elavo.Desktop`, when Files is not focused.
+    /// A command of the desktop, via `io.elavo.Desktop`.
     Desktop(&'static str),
-    /// `slot.files-view-mode`. List is 1, grid (icons) is 2.
-    FilesMode(u32),
     Wm(Wm),
     Disabled,
 }
@@ -115,16 +114,13 @@ enum Route {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Needs {
     Always,
-    /// A Nautilus window is focused.
-    Focused,
-    /// A Nautilus window, or the desktop when Files is not focused.
-    Surface,
-    /// The desktop only. Off while a Files window is focused.
-    DesktopOnly,
-    /// At least one Nautilus window exists.
+    /// The desktop says whether it can run now (its selection).
+    Desktop,
+    /// At least one Files window exists.
     Windows,
-    /// At least two Nautilus windows exist.
+    /// At least two Files windows exist.
     Two,
+    /// Only for a focused window, which the desktop is not.
     Never,
 }
 
@@ -137,429 +133,259 @@ struct Item {
     route: Route,
 }
 
-const fn files(action: &'static str) -> Route {
-    Route::Files(action)
-}
-
-fn files_action(route: Route) -> Option<&'static str> {
-    match route {
-        Route::Files(action) => Some(action),
-        Route::FilesMode(_) => Some("slot.files-view-mode"),
-        _ => None,
+const fn item(
+    menu: &'static str,
+    section: u8,
+    id: &'static str,
+    label: &'static str,
+    needs: Needs,
+    route: Route,
+) -> Item {
+    Item {
+        menu,
+        section,
+        id,
+        label,
+        needs,
+        route,
     }
 }
 
 const MENUS: &[&str] = &["Folio", "File", "Edit", "View", "Go", "Window", "Help"];
 
+use Needs::{Always, Desktop, Never, Two, Windows};
+use Route::{Files, Show};
+
 const ITEMS: &[Item] = &[
-    Item {
-        menu: "Folio",
-        section: 0,
-        id: "about",
-        label: "About Folio",
-        needs: Needs::Always,
-        route: Route::About,
-    },
-    Item {
-        menu: "Folio",
-        section: 1,
-        id: "settings",
-        label: "Settings…",
-        needs: Needs::Always,
-        route: Route::Nautilus("preferences"),
-    },
-    Item {
-        menu: "Folio",
-        section: 2,
-        id: "empty-trash",
-        label: "Empty Trash…",
-        needs: Needs::Always,
-        route: Route::FileOp("EmptyTrash"),
-    },
-    Item {
-        menu: "Folio",
-        section: 3,
-        id: "hide",
-        label: "Hide Folio",
-        needs: Needs::Windows,
-        route: Route::Wm(Wm::HideFolio),
-    },
-    Item {
-        menu: "Folio",
-        section: 3,
-        id: "hide-others",
-        label: "Hide Others",
-        needs: Needs::Always,
-        route: Route::Wm(Wm::HideOthers),
-    },
-    Item {
-        menu: "Folio",
-        section: 3,
-        id: "show-all",
-        label: "Show All",
-        needs: Needs::Always,
-        route: Route::Wm(Wm::ShowAll),
-    },
-    Item {
-        menu: "File",
-        section: 0,
-        id: "new-window",
-        label: "New Folio Window",
-        needs: Needs::Always,
-        route: Route::Nautilus("new-window"),
-    },
-    Item {
-        menu: "File",
-        section: 0,
-        id: "new-folder",
-        label: "New Folder",
-        needs: Needs::Surface,
-        route: files("view.new-folder"),
-    },
-    Item {
-        menu: "File",
-        section: 0,
-        id: "new-tab",
-        label: "New Tab",
-        needs: Needs::Focused,
-        route: files("win.new-tab"),
-    },
-    Item {
-        menu: "File",
-        section: 0,
-        id: "open",
-        label: "Open",
-        needs: Needs::Surface,
-        route: files("view.open-with-default-application"),
-    },
-    Item {
-        menu: "File",
-        section: 1,
-        id: "close",
-        label: "Close Window",
-        needs: Needs::Focused,
-        route: Route::Wm(Wm::Close),
-    },
-    Item {
-        menu: "File",
-        section: 2,
-        id: "get-info",
-        label: "Get Info",
-        needs: Needs::Surface,
-        route: files("view.properties"),
-    },
-    Item {
-        menu: "File",
-        section: 2,
-        id: "rename",
-        label: "Rename…",
-        needs: Needs::Surface,
-        route: files("view.rename"),
-    },
-    Item {
-        menu: "File",
-        section: 3,
-        id: "make-link",
-        label: "Make Link",
-        needs: Needs::Focused,
-        route: files("view.create-link-in-place"),
-    },
-    Item {
-        menu: "File",
-        section: 3,
-        id: "quick-look",
-        label: "Quick Look",
-        needs: Needs::Surface,
-        route: files("view.preview-selection"),
-    },
-    Item {
-        menu: "File",
-        section: 3,
-        id: "add-to-sidebar",
-        label: "Add to Sidebar",
-        needs: Needs::Focused,
-        route: files("slot.bookmark-current-directory"),
-    },
-    Item {
-        menu: "File",
-        section: 4,
-        id: "trash",
-        label: "Move to Trash",
-        needs: Needs::Surface,
-        route: files("view.move-to-trash"),
-    },
-    Item {
-        menu: "File",
-        section: 5,
-        id: "find",
-        label: "Find",
-        needs: Needs::Focused,
-        route: files("slot.focus-search"),
-    },
-    Item {
-        menu: "Edit",
-        section: 0,
-        id: "undo",
-        label: "Undo",
-        needs: Needs::Always,
-        route: Route::FileOp("Undo"),
-    },
-    Item {
-        menu: "Edit",
-        section: 0,
-        id: "redo",
-        label: "Redo",
-        needs: Needs::Always,
-        route: Route::FileOp("Redo"),
-    },
-    Item {
-        menu: "Edit",
-        section: 1,
-        id: "cut",
-        label: "Cut",
-        needs: Needs::Surface,
-        route: files("view.cut"),
-    },
-    Item {
-        menu: "Edit",
-        section: 1,
-        id: "copy",
-        label: "Copy",
-        needs: Needs::Surface,
-        route: files("view.copy"),
-    },
-    Item {
-        menu: "Edit",
-        section: 1,
-        id: "paste",
-        label: "Paste",
-        needs: Needs::Surface,
-        route: files("view.paste"),
-    },
-    Item {
-        menu: "Edit",
-        section: 2,
-        id: "select-all",
-        label: "Select All",
-        needs: Needs::Surface,
-        route: files("view.select-all"),
-    },
-    Item {
-        menu: "View",
-        section: 0,
-        id: "icons",
-        label: "as Icons",
-        needs: Needs::Focused,
-        route: Route::FilesMode(2),
-    },
-    Item {
-        menu: "View",
-        section: 0,
-        id: "list",
-        label: "as List",
-        needs: Needs::Focused,
-        route: Route::FilesMode(1),
-    },
-    Item {
-        menu: "View",
-        section: 1,
-        id: "sidebar",
-        label: "Show/Hide Sidebar",
-        needs: Needs::Focused,
-        route: files("win.toggle-sidebar"),
-    },
-    Item {
-        menu: "View",
-        section: 2,
-        id: "fullscreen",
-        label: "Enter Full Screen",
-        needs: Needs::Focused,
-        route: Route::Wm(Wm::Fullscreen),
-    },
-    Item {
-        menu: "View",
-        section: 3,
-        id: "use-stacks",
-        label: "Use Stacks",
-        needs: Needs::DesktopOnly,
-        route: Route::Desktop("use-stacks"),
-    },
-    Item {
-        menu: "Go",
-        section: 0,
-        id: "back",
-        label: "Back",
-        needs: Needs::Focused,
-        route: files("slot.back"),
-    },
-    Item {
-        menu: "Go",
-        section: 0,
-        id: "forward",
-        label: "Forward",
-        needs: Needs::Focused,
-        route: files("slot.forward"),
-    },
-    Item {
-        menu: "Go",
-        section: 0,
-        id: "enclosing",
-        label: "Enclosing Folder",
-        needs: Needs::Focused,
-        route: files("slot.up"),
-    },
-    Item {
-        menu: "Go",
-        section: 1,
-        id: "recents",
-        label: "Recents",
-        needs: Needs::Always,
-        route: Route::Show(Place::Recents),
-    },
-    Item {
-        menu: "Go",
-        section: 1,
-        id: "documents",
-        label: "Documents",
-        needs: Needs::Always,
-        route: Route::Show(Place::Documents),
-    },
-    Item {
-        menu: "Go",
-        section: 1,
-        id: "desktop",
-        label: "Desktop",
-        needs: Needs::Always,
-        route: Route::Show(Place::Desktop),
-    },
-    Item {
-        menu: "Go",
-        section: 1,
-        id: "downloads",
-        label: "Downloads",
-        needs: Needs::Always,
-        route: Route::Show(Place::Downloads),
-    },
-    Item {
-        menu: "Go",
-        section: 1,
-        id: "home",
-        label: "Home",
-        needs: Needs::Always,
-        route: Route::Home,
-    },
-    Item {
-        menu: "Go",
-        section: 1,
-        id: "computer",
-        label: "Computer",
-        needs: Needs::Always,
-        route: Route::Show(Place::Computer),
-    },
-    Item {
-        menu: "Go",
-        section: 1,
-        id: "network",
-        label: "Network",
-        needs: Needs::Always,
-        route: Route::Show(Place::Network),
-    },
-    Item {
-        menu: "Go",
-        section: 1,
-        id: "applications",
-        label: "Applications",
-        needs: Needs::Always,
-        route: Route::Show(Place::Applications),
-    },
-    Item {
-        menu: "Go",
-        section: 2,
-        id: "go-to-folder",
-        label: "Go to Folder…",
-        needs: Needs::Focused,
-        route: files("toolbar.edit-location"),
-    },
-    Item {
-        menu: "Go",
-        section: 2,
-        id: "connect",
-        label: "Connect to Server…",
-        needs: Needs::Always,
-        route: Route::Show(Place::Connect),
-    },
-    Item {
-        menu: "Window",
-        section: 0,
-        id: "minimize",
-        label: "Minimize",
-        needs: Needs::Focused,
-        route: Route::Wm(Wm::Minimize),
-    },
-    Item {
-        menu: "Window",
-        section: 0,
-        id: "zoom",
-        label: "Zoom",
-        needs: Needs::Focused,
-        route: Route::Wm(Wm::Maximize),
-    },
-    Item {
-        menu: "Window",
-        section: 1,
-        id: "cycle",
-        label: "Cycle Through Windows",
-        needs: Needs::Two,
-        route: Route::Wm(Wm::Cycle),
-    },
-    Item {
-        menu: "Window",
-        section: 1,
-        id: "progress",
-        label: "Show Progress Window",
-        needs: Needs::Always,
-        route: Route::Nautilus("show-file-transfers"),
-    },
-    Item {
-        menu: "Window",
-        section: 1,
-        id: "previous-tab",
-        label: "Show Previous Tab",
-        needs: Needs::Focused,
-        route: files("folio.previous-tab"),
-    },
-    Item {
-        menu: "Window",
-        section: 1,
-        id: "next-tab",
-        label: "Show Next Tab",
-        needs: Needs::Focused,
-        route: files("folio.next-tab"),
-    },
-    Item {
-        menu: "Window",
-        section: 2,
-        id: "bring-all-to-front",
-        label: "Bring All to Front",
-        needs: Needs::Windows,
-        route: Route::Wm(Wm::BringAll),
-    },
-    Item {
-        menu: "Help",
-        section: 0,
-        id: "help",
-        label: "Folio Help",
-        needs: Needs::Never,
-        route: Route::Disabled,
-    },
-    Item {
-        menu: "Help",
-        section: 0,
-        id: "shortcuts",
-        label: "Keyboard Shortcuts",
-        needs: Needs::Always,
-        route: Route::Nautilus("shortcuts"),
-    },
+    item("Folio", 0, "about", "About Folio", Always, Route::About),
+    item(
+        "Folio",
+        1,
+        "settings",
+        "Settings…",
+        Always,
+        Files("settings"),
+    ),
+    item(
+        "Folio",
+        2,
+        "empty-trash",
+        "Empty Trash…",
+        Always,
+        Files("empty-trash"),
+    ),
+    item(
+        "Folio",
+        3,
+        "hide",
+        "Hide Folio",
+        Windows,
+        Route::Wm(Wm::HideFolio),
+    ),
+    item(
+        "Folio",
+        3,
+        "hide-others",
+        "Hide Others",
+        Always,
+        Route::Wm(Wm::HideOthers),
+    ),
+    item(
+        "Folio",
+        3,
+        "show-all",
+        "Show All",
+        Always,
+        Route::Wm(Wm::ShowAll),
+    ),
+    item(
+        "File",
+        0,
+        "new-window",
+        "New Folio Window",
+        Always,
+        Files("new-window"),
+    ),
+    item(
+        "File",
+        0,
+        "new-folder",
+        "New Folder",
+        Desktop,
+        Route::Desktop("new-folder"),
+    ),
+    item("File", 0, "open", "Open", Desktop, Route::Desktop("open")),
+    item(
+        "File",
+        0,
+        "close",
+        "Close Window",
+        Never,
+        Route::Wm(Wm::Close),
+    ),
+    item(
+        "File",
+        1,
+        "get-info",
+        "Get Info",
+        Desktop,
+        Route::Desktop("get-info"),
+    ),
+    item(
+        "File",
+        1,
+        "rename",
+        "Rename…",
+        Desktop,
+        Route::Desktop("rename"),
+    ),
+    item(
+        "File",
+        2,
+        "quick-look",
+        "Quick Look",
+        Desktop,
+        Route::Desktop("quick-look"),
+    ),
+    item(
+        "File",
+        3,
+        "trash",
+        "Move to Trash",
+        Desktop,
+        Route::Desktop("move-to-trash"),
+    ),
+    item("File", 4, "find", "Find", Always, Files("win-search")),
+    item("Edit", 0, "undo", "Undo", Always, Route::FileOp("Undo")),
+    item("Edit", 0, "redo", "Redo", Always, Route::FileOp("Redo")),
+    item("Edit", 1, "cut", "Cut", Desktop, Route::Desktop("cut")),
+    item("Edit", 1, "copy", "Copy", Desktop, Route::Desktop("copy")),
+    item(
+        "Edit",
+        1,
+        "paste",
+        "Paste",
+        Desktop,
+        Route::Desktop("paste"),
+    ),
+    item(
+        "Edit",
+        2,
+        "select-all",
+        "Select All",
+        Desktop,
+        Route::Desktop("select-all"),
+    ),
+    item(
+        "View",
+        0,
+        "use-stacks",
+        "Use Stacks",
+        Desktop,
+        Route::Desktop("use-stacks"),
+    ),
+    item(
+        "View",
+        1,
+        "fullscreen",
+        "Enter Full Screen",
+        Never,
+        Route::Wm(Wm::Fullscreen),
+    ),
+    item("Go", 0, "recents", "Recents", Always, Show(Place::Recents)),
+    item(
+        "Go",
+        0,
+        "documents",
+        "Documents",
+        Always,
+        Show(Place::Documents),
+    ),
+    item("Go", 0, "desktop", "Desktop", Always, Show(Place::Desktop)),
+    item(
+        "Go",
+        0,
+        "downloads",
+        "Downloads",
+        Always,
+        Show(Place::Downloads),
+    ),
+    item("Go", 0, "home", "Home", Always, Show(Place::Home)),
+    item(
+        "Go",
+        0,
+        "computer",
+        "Computer",
+        Always,
+        Show(Place::Computer),
+    ),
+    item("Go", 0, "network", "Network", Always, Show(Place::Network)),
+    item(
+        "Go",
+        0,
+        "applications",
+        "Applications",
+        Always,
+        Show(Place::Applications),
+    ),
+    item(
+        "Go",
+        1,
+        "go-to-folder",
+        "Go to Folder…",
+        Always,
+        Files("win-go-to-folder"),
+    ),
+    item(
+        "Go",
+        1,
+        "connect",
+        "Connect to Server…",
+        Always,
+        Files("win-connect-server"),
+    ),
+    item(
+        "Window",
+        0,
+        "minimize",
+        "Minimize",
+        Never,
+        Route::Wm(Wm::Minimize),
+    ),
+    item("Window", 0, "zoom", "Zoom", Never, Route::Wm(Wm::Maximize)),
+    item(
+        "Window",
+        1,
+        "cycle",
+        "Cycle Through Windows",
+        Two,
+        Route::Wm(Wm::Cycle),
+    ),
+    item(
+        "Window",
+        1,
+        "progress",
+        "Show Progress Window",
+        Windows,
+        Files("win-show-progress"),
+    ),
+    item(
+        "Window",
+        2,
+        "bring-all-to-front",
+        "Bring All to Front",
+        Windows,
+        Route::Wm(Wm::BringAll),
+    ),
+    item("Help", 0, "help", "Folio Help", Never, Route::Disabled),
+    item(
+        "Help",
+        0,
+        "shortcuts",
+        "Keyboard Shortcuts",
+        Always,
+        Files("shortcuts"),
+    ),
 ];
 
 type WmHandler = Box<dyn Fn(Wm)>;
@@ -568,12 +394,7 @@ type FocusHandler = Box<dyn Fn(bool)>;
 pub struct Folio {
     actions: gio::SimpleActionGroup,
     model: gio::Menu,
-    nautilus_focused: Cell<bool>,
-    /// Bumped when focus leaves Nautilus so a late Enabled reply is dropped.
-    query_gen: Cell<u64>,
-    query_inflight: Cell<bool>,
-    query_pending: Cell<bool>,
-    /// Bumped when a Files window takes focus so a late desktop reply is dropped.
+    /// Bumped on every context change so a late desktop reply is dropped.
     desktop_gen: Cell<u64>,
     desktop_inflight: Cell<bool>,
     desktop_pending: Cell<bool>,
@@ -587,10 +408,6 @@ impl Folio {
         let folio = Rc::new(Self {
             actions: gio::SimpleActionGroup::new(),
             model: gio::Menu::new(),
-            nautilus_focused: Cell::new(false),
-            query_gen: Cell::new(0),
-            query_inflight: Cell::new(false),
-            query_pending: Cell::new(false),
             desktop_gen: Cell::new(0),
             desktop_inflight: Cell::new(false),
             desktop_pending: Cell::new(false),
@@ -599,7 +416,8 @@ impl Folio {
             wm: RefCell::new(None),
         });
         folio.build(window_list);
-        folio.set_context(false, 0);
+        folio.set_context(0);
+        folio.refresh();
         folio.listen_desktop();
         folio
     }
@@ -610,6 +428,39 @@ impl Folio {
 
     pub fn actions(&self) -> &gio::SimpleActionGroup {
         &self.actions
+    }
+
+    /// The menu titled Folio in front of a Files window's own menus.
+    /// `folio.*` are these actions; `app.*` are Files' own, from its
+    /// exported action group.
+    pub fn files_app_menu() -> gio::Menu {
+        let menu = gio::Menu::new();
+        let section = |items: &[(&str, &str, Option<&str>)]| {
+            let section = gio::Menu::new();
+            for (label, action, accel) in items {
+                let item = gio::MenuItem::new(Some(&mnemonic(label)), Some(action));
+                if let Some(accel) = accel {
+                    item.set_attribute_value("accel", Some(&accel.to_variant()));
+                }
+                section.append_item(&item);
+            }
+            section
+        };
+        menu.append_section(None, &section(&[("About Folio", "folio.about", None)]));
+        menu.append_section(
+            None,
+            &section(&[("Settings…", "app.settings", Some("<Control>comma"))]),
+        );
+        menu.append_section(None, &section(&[("Empty Trash…", "app.empty-trash", None)]));
+        menu.append_section(
+            None,
+            &section(&[
+                ("Hide Folio", "folio.hide", None),
+                ("Hide Others", "folio.hide-others", None),
+                ("Show All", "folio.show-all", None),
+            ]),
+        );
+        menu
     }
 
     /// `wm` runs the window commands, which need the panel's window list.
@@ -624,36 +475,19 @@ impl Folio {
         self.desktop_focus.replace(Some(Box::new(focus)));
     }
 
-    pub fn set_context(self: &Rc<Self>, nautilus_focused: bool, nautilus_windows: usize) {
-        let was_focused = self.nautilus_focused.get();
-        self.nautilus_focused.set(nautilus_focused);
-        if nautilus_focused {
-            self.desktop_gen.set(self.desktop_gen.get().wrapping_add(1));
-            self.desktop_pending.set(false);
-        } else {
-            self.query_gen.set(self.query_gen.get().wrapping_add(1));
-            self.query_pending.set(false);
-        }
+    /// `files_windows` is how many Files windows are open, for Hide Folio,
+    /// Cycle Through Windows and Bring All to Front.
+    pub fn set_context(self: &Rc<Self>, files_windows: usize) {
         for item in ITEMS {
-            // While Files stays focused, keep the plugin's last answer for
-            // window actions so a window-list update does not flash them on.
-            if nautilus_focused && was_focused && files_action(item.route).is_some() {
-                continue;
-            }
             let enabled = match item.needs {
+                // The desktop's answer arrives in query_desktop.
+                Needs::Desktop => continue,
                 Needs::Always => true,
-                Needs::Focused | Needs::Surface => nautilus_focused,
-                Needs::DesktopOnly => false,
-                Needs::Windows => nautilus_windows > 0,
-                Needs::Two => nautilus_windows >= 2,
+                Needs::Windows => files_windows > 0,
+                Needs::Two => files_windows >= 2,
                 Needs::Never => false,
             };
             self.set_enabled(item.id, enabled);
-        }
-        if nautilus_focused {
-            self.query_files();
-        } else {
-            self.query_desktop();
         }
     }
 
@@ -667,62 +501,13 @@ impl Folio {
         }
     }
 
-    /// Ask the plugin which window actions can run, and gray the rest.
-    /// A burst of focus events waits for the call in flight, then asks once more.
-    pub(crate) fn query_files(self: &Rc<Self>) {
-        if !self.nautilus_focused.get() {
-            return;
-        }
-        if self.query_inflight.get() {
-            self.query_pending.set(true);
-            return;
-        }
-        self.query_inflight.set(true);
-        self.query_pending.set(false);
-        let generation = self.query_gen.get();
-        let actions: Vec<String> = ITEMS
-            .iter()
-            .filter_map(|item| files_action(item.route).map(str::to_owned))
-            .collect();
-        let ids: Vec<&'static str> = ITEMS
-            .iter()
-            .filter(|item| files_action(item.route).is_some())
-            .map(|item| item.id)
-            .collect();
-        let weak = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
-            let reply = files_enabled(actions).await;
-            let Some(folio) = weak.upgrade() else {
-                return;
-            };
-            folio.query_inflight.set(false);
-            if folio.query_gen.get() != generation || !folio.nautilus_focused.get() {
-                return;
-            }
-            match reply {
-                Ok(flags) => {
-                    for (id, enabled) in ids.into_iter().zip(flags) {
-                        folio.set_enabled(id, enabled);
-                    }
-                }
-                Err(err) => {
-                    glib::g_warning!("elavo-panel", "folio files: {err}");
-                    for id in ids {
-                        folio.set_enabled(id, false);
-                    }
-                }
-            }
-            if folio.query_pending.get() {
-                folio.query_files();
-            }
-        });
+    /// Refresh which desktop commands can run, as a menu opens.
+    pub(crate) fn refresh(self: &Rc<Self>) {
+        self.query_desktop();
     }
 
     /// Ask the desktop which file commands can run on the current selection.
     fn query_desktop(self: &Rc<Self>) {
-        if self.nautilus_focused.get() {
-            return;
-        }
         if self.desktop_inflight.get() {
             self.desktop_pending.set(true);
             return;
@@ -733,10 +518,10 @@ impl Folio {
         let mut actions = Vec::new();
         let mut ids = Vec::new();
         for item in ITEMS {
-            let Some(command) = desktop_command(item.route) else {
+            let Route::Desktop(command) = item.route else {
                 continue;
             };
-            if !matches!(item.needs, Needs::Surface | Needs::DesktopOnly) {
+            if item.needs != Needs::Desktop {
                 continue;
             }
             actions.push(command.to_string());
@@ -750,7 +535,7 @@ impl Folio {
                 return;
             };
             folio.desktop_inflight.set(false);
-            if folio.desktop_gen.get() != generation || folio.nautilus_focused.get() {
+            if folio.desktop_gen.get() != generation {
                 return;
             }
             if let Some(on) = stacks {
@@ -806,9 +591,6 @@ impl Folio {
                     let Some(folio) = owner.upgrade() else {
                         return;
                     };
-                    if folio.nautilus_focused.get() {
-                        return;
-                    }
                     let params = signal.parameters;
                     if params.n_children() > 0 {
                         if let Some(on) = params.child_value(0).get::<bool>() {
@@ -918,33 +700,14 @@ impl Folio {
     fn run(&self, route: Route) {
         match route {
             Route::About => crate::menu::open_settings("about"),
-            Route::Nautilus(action) => nautilus_action(action),
+            Route::Files(action) => files_action(action),
             Route::FileOp(method) => file_op(method),
             Route::Show(place) => {
                 if let Some(uri) = place.uri() {
                     show_folder(uri);
                 }
             }
-            Route::Home => {
-                if self.nautilus_focused.get() {
-                    files_call("win.go-home", None);
-                } else if let Some(uri) = home_uri() {
-                    show_folder(uri);
-                }
-            }
-            Route::Files(action) => {
-                if self.nautilus_focused.get() {
-                    files_call(action, None);
-                } else if let Some(command) = desktop_command(Route::Files(action)) {
-                    desktop_call(command);
-                }
-            }
-            Route::Desktop(action) => {
-                if !self.nautilus_focused.get() {
-                    desktop_call(action);
-                }
-            }
-            Route::FilesMode(mode) => files_call("slot.files-view-mode", Some(mode)),
+            Route::Desktop(action) => desktop_call(action),
             Route::Wm(wm) => {
                 if let Some(handler) = self.wm.borrow().as_ref() {
                     handler(wm);
@@ -984,7 +747,10 @@ impl Place {
             Place::Documents => special(glib::UserDirectory::Documents),
             Place::Desktop => special(glib::UserDirectory::Desktop),
             Place::Downloads => special(glib::UserDirectory::Downloads),
-            Place::Computer | Place::Connect => Some("other-locations:///".to_owned()),
+            Place::Home => home_uri(),
+            // Files has no Computer view: Home, with the drives under
+            // Locations in its sidebar.
+            Place::Computer => home_uri(),
             Place::Network => Some("network:///".to_owned()),
             Place::Applications => {
                 applications_dir().map(|path| gio::File::for_path(path).uri().to_string())
@@ -993,7 +759,9 @@ impl Place {
     }
 }
 
-fn nautilus_action(action: &'static str) {
+/// Activate an application action of Files over `org.gtk.Actions`. D-Bus
+/// starts Files first when it is not running.
+fn files_action(action: &'static str) {
     glib::spawn_future_local(async move {
         let call = async {
             let bus = gio::bus_get_future(gio::BusType::Session).await?;
@@ -1002,8 +770,8 @@ fn nautilus_action(action: &'static str) {
                 glib::Error::new(gio::IOErrorEnum::InvalidArgument, err.message())
             })?;
             bus.call_future(
-                Some(NAUTILUS),
-                NAUTILUS_PATH,
+                Some(FILES),
+                FILES_PATH,
                 "org.gtk.Actions",
                 "Activate",
                 Some(&parameters),
@@ -1014,7 +782,7 @@ fn nautilus_action(action: &'static str) {
             .await
         };
         if let Err(err) = call.await {
-            glib::g_warning!("elavo-panel", "nautilus {action}: {err}");
+            glib::g_warning!("elavo-panel", "files {action}: {err}");
         }
     });
 }
@@ -1046,75 +814,6 @@ fn file_op(method: &'static str) {
             glib::g_warning!("elavo-panel", "nautilus {method}: {err}");
         }
     });
-}
-
-fn files_call(action: &'static str, target: Option<u32>) {
-    glib::spawn_future_local(async move {
-        let call = async {
-            let bus = gio::bus_get_future(gio::BusType::Session).await?;
-            // D-Bus rejects an empty tuple, so "no target" is an empty array.
-            let target = match target {
-                Some(mode) => vec![mode.to_variant()],
-                None => Vec::new(),
-            };
-            bus.call_future(
-                Some(FOLIO_FILES),
-                FOLIO_FILES_PATH,
-                FOLIO_FILES,
-                "Activate",
-                Some(&(action.to_string(), target).to_variant()),
-                None,
-                gio::DBusCallFlags::NONE,
-                -1,
-            )
-            .await
-        };
-        if let Err(err) = call.await {
-            glib::g_warning!("elavo-panel", "folio files {action}: {err}");
-        }
-    });
-}
-
-async fn files_enabled(actions: Vec<String>) -> Result<Vec<bool>, glib::Error> {
-    let bus = gio::bus_get_future(gio::BusType::Session).await?;
-    let reply = bus
-        .call_future(
-            Some(FOLIO_FILES),
-            FOLIO_FILES_PATH,
-            FOLIO_FILES,
-            "Enabled",
-            Some(&(actions,).to_variant()),
-            None,
-            gio::DBusCallFlags::NONE,
-            -1,
-        )
-        .await?;
-    let array = reply.child_value(0);
-    let mut flags = Vec::with_capacity(array.n_children() as usize);
-    for index in 0..array.n_children() {
-        flags.push(array.child_value(index).get::<bool>().unwrap_or(false));
-    }
-    Ok(flags)
-}
-
-fn desktop_command(route: Route) -> Option<&'static str> {
-    match route {
-        Route::Files(action) => Some(match action {
-            "view.new-folder" => "new-folder",
-            "view.open-with-default-application" => "open",
-            "view.properties" => "get-info",
-            "view.preview-selection" => "quick-look",
-            "view.rename" => "rename",
-            "view.move-to-trash" => "move-to-trash",
-            "view.cut" => "cut",
-            "view.copy" => "copy",
-            "view.paste" => "paste",
-            "view.select-all" => "select-all",
-            _ => return None,
-        }),
-        Route::Desktop(action) => Some(action),
-        _ => None,
-    }
 }
 
 fn desktop_call(action: &'static str) {
@@ -1207,7 +906,6 @@ mod tests {
     #[test]
     fn folio_is_an_allowlist() {
         assert!(is_folio(None));
-        assert!(is_folio(Some(NAUTILUS)));
         assert!(is_folio(Some("io.elavo.Panel")));
         assert!(is_folio(Some("io.elavo.PanelPreview")));
         assert!(is_folio(Some("io.elavo.Dock")));
@@ -1215,8 +913,15 @@ mod tests {
         assert!(is_folio(Some("io.elavo.Lens")));
         assert!(is_folio(Some("io.elavo.Switcher")));
         assert!(is_folio(Some("io.elavo.Applications")));
-        assert!(is_folio_window(NAUTILUS));
+        // Files shows its own menus under a Folio menu.
+        assert!(!is_folio(Some(FILES)));
+        assert!(is_files(Some(FILES)));
+        assert!(!is_files(None));
+        assert!(is_folio_window(FILES));
         assert!(is_folio_window("io.elavo.Panel"));
+        // Nautilus is an ordinary application now.
+        assert!(!is_folio(Some("org.gnome.Nautilus")));
+        assert!(!is_folio_window("org.gnome.Nautilus"));
         assert!(!is_folio(Some("io.elavo.SystemSettings")));
         assert!(!is_folio(Some("io.elavo.AppBay")));
         assert!(!is_folio(Some("io.elavo.Music")));
@@ -1234,67 +939,66 @@ mod tests {
             assert!(seen.insert(item.id), "duplicate action {}", item.id);
             assert!(!item.label.is_empty(), "{}", item.id);
             assert!(MENUS.contains(&item.menu), "{}", item.id);
-            let _ = item.route;
         }
         assert_eq!(seen.len(), ITEMS.len());
     }
 
     #[test]
-    fn files_actions_name_a_group_and_an_action() {
+    fn nothing_goes_to_nautilus_windows() {
         for item in ITEMS {
-            match item.route {
-                Route::Files(action) => {
-                    let (prefix, name) = action
-                        .split_once('.')
-                        .unwrap_or_else(|| panic!("{} has no group", item.id));
-                    assert!(!prefix.is_empty(), "{}", item.id);
-                    assert!(!name.is_empty() && !name.contains('.'), "{}", item.id);
-                }
-                Route::FilesMode(mode) => assert!(mode == 1 || mode == 2, "{}", item.id),
-                _ => {}
+            if let Route::Files(action) = item.route {
+                assert!(!action.contains('.'), "{} names a group", item.id);
+                assert!(!action.is_empty(), "{}", item.id);
             }
+        }
+        for id in [
+            "settings",
+            "new-window",
+            "empty-trash",
+            "connect",
+            "shortcuts",
+            "progress",
+        ] {
+            let item = ITEMS.iter().find(|item| item.id == id).unwrap();
+            assert!(matches!(item.route, Route::Files(_)), "{id}");
         }
     }
 
     #[test]
-    fn desktop_commands_cover_the_file_surface() {
+    fn desktop_items_ask_the_desktop() {
         for item in ITEMS {
-            if item.needs == Needs::Surface {
-                assert!(
-                    desktop_command(item.route).is_some(),
-                    "{} has no desktop command",
-                    item.id
-                );
-            }
+            assert_eq!(
+                item.needs == Needs::Desktop,
+                matches!(item.route, Route::Desktop(_)),
+                "{}",
+                item.id
+            );
         }
         assert!(ITEMS.iter().any(|item| {
-            item.id == "use-stacks" && item.needs == Needs::DesktopOnly && item.menu == "View"
+            item.id == "use-stacks" && item.needs == Needs::Desktop && item.menu == "View"
         }));
     }
 
     #[test]
     fn window_commands_stay_off_the_desktop() {
+        for id in ["close", "fullscreen", "minimize", "zoom"] {
+            let item = ITEMS.iter().find(|item| item.id == id).unwrap();
+            assert_eq!(item.needs, Needs::Never, "{id}");
+        }
         for id in [
             "new-tab",
-            "close",
-            "make-link",
-            "add-to-sidebar",
-            "find",
-            "icons",
-            "list",
-            "sidebar",
-            "fullscreen",
-            "back",
-            "forward",
-            "enclosing",
-            "go-to-folder",
-            "minimize",
-            "zoom",
             "previous-tab",
             "next-tab",
+            "icons",
+            "list",
+            "back",
         ] {
-            let item = ITEMS.iter().find(|item| item.id == id).unwrap();
-            assert_eq!(item.needs, Needs::Focused, "{id}");
+            assert!(ITEMS.iter().all(|item| item.id != id), "{id}");
         }
+    }
+
+    #[test]
+    fn computer_shows_home() {
+        assert_eq!(Place::Computer.uri(), home_uri());
     }
 }

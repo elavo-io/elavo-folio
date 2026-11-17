@@ -35,6 +35,9 @@ const SETTLE: Duration = Duration::from_millis(30);
 #[derive(Clone)]
 struct Menus {
     model: gio::MenuModel,
+    /// Files' exported menubar, which `model` mirrors with the panel's
+    /// Window menu in place of Files' own.
+    _remote: Option<gio::MenuModel>,
     app: gio::ActionGroup,
     win: Option<gio::ActionGroup>,
     /// The application has its own Window menu, and the panel's items are a
@@ -45,10 +48,10 @@ struct Menus {
 }
 
 struct Shown {
-    /// The desktop, Nautilus, or a Folio window: Folio's own menus.
+    /// The desktop or a Folio shell window: Folio's own menus.
     folio: bool,
-    /// A Nautilus window is the focused one, so items that act on it are on.
-    nautilus_focused: bool,
+    /// A Files window: Files' exported menus under a menu titled Folio.
+    files: bool,
     app_id: String,
     windows: usize,
     name: String,
@@ -73,6 +76,8 @@ pub struct AppMenu {
     /// The focused application's windows, at the end of the Window menu.
     window_list: gio::Menu,
     window_menu: gio::Menu,
+    /// The Window menu for Files windows: Folio's items and the list.
+    files_window_menu: gio::Menu,
     listed: RefCell<Vec<(String, String)>>,
     generation: Cell<u64>,
     queued: Cell<bool>,
@@ -96,6 +101,7 @@ impl AppMenu {
             actions: gio::SimpleActionGroup::new(),
             folio,
             window_menu: window_menu(&window_list),
+            files_window_menu: files_window_menu(&window_list),
             window_list,
             listed: RefCell::default(),
             generation: Cell::new(0),
@@ -196,11 +202,11 @@ impl AppMenu {
     }
 
     /// The focused application's windows, in the order they appeared.
-    /// Folio's windows are Nautilus's, including when the desktop is focused.
+    /// Folio's windows are Files's, including when the desktop is focused.
     fn app_windows(&self) -> Vec<Toplevel> {
         let focused = self.focus.borrow().focused().map(str::to_owned);
-        if folio::is_folio(focused.as_deref()) {
-            return self.nautilus_windows();
+        if folio::is_folio(focused.as_deref()) || folio::is_files(focused.as_deref()) {
+            return self.files_windows();
         }
         let app_id = focused.unwrap_or_default();
         self.toplevels
@@ -211,11 +217,11 @@ impl AppMenu {
             .collect()
     }
 
-    fn nautilus_windows(&self) -> Vec<Toplevel> {
+    fn files_windows(&self) -> Vec<Toplevel> {
         self.toplevels
             .borrow()
             .iter()
-            .filter(|t| t.app_id == folio::NAUTILUS)
+            .filter(|t| t.app_id == folio::FILES)
             .cloned()
             .collect()
     }
@@ -229,7 +235,7 @@ impl AppMenu {
             folio::Wm::Minimize => self.focused_window(Controller::minimize),
             folio::Wm::Maximize => self.focused_window(Controller::toggle_maximized),
             folio::Wm::Fullscreen => self.focused_window(Controller::toggle_fullscreen),
-            folio::Wm::Cycle => self.cycle_nautilus(),
+            folio::Wm::Cycle => self.cycle_files(),
             folio::Wm::BringAll => self.bring_all_to_front(),
         }
     }
@@ -271,9 +277,9 @@ impl AppMenu {
         }
     }
 
-    fn cycle_nautilus(&self) {
+    fn cycle_files(&self) {
         let active = self.focus.borrow().active().cloned();
-        let windows = self.nautilus_windows();
+        let windows = self.files_windows();
         if windows.len() < 2 {
             return;
         }
@@ -434,24 +440,24 @@ impl AppMenu {
     /// `force` probes the menus again for the same application, after a
     /// registration with the Registrar came or went.
     fn refresh_shown(self: &Rc<Self>, force: bool) {
-        let (focused, nautilus_windows) = {
+        let (focused, files_windows) = {
             let focus = self.focus.borrow();
             let focused = if self.desktop_focused.get() {
                 None
             } else {
                 focus.focused().map(str::to_owned)
             };
-            let nautilus_windows = focus.windows_of(folio::NAUTILUS);
-            (focused, nautilus_windows)
+            let files_windows = focus.windows_of(folio::FILES);
+            (focused, files_windows)
         };
+        self.folio.set_context(files_windows);
         if folio::is_folio(focused.as_deref()) {
-            let nautilus_focused = focused.as_deref() == Some(folio::NAUTILUS);
-            self.folio.set_context(nautilus_focused, nautilus_windows);
-            let same = self.shown.borrow().as_ref().is_some_and(|shown| {
-                shown.folio
-                    && shown.nautilus_focused == nautilus_focused
-                    && shown.windows == nautilus_windows
-            });
+            self.folio.refresh();
+            let same = self
+                .shown
+                .borrow()
+                .as_ref()
+                .is_some_and(|shown| shown.folio && shown.windows == files_windows);
             if same {
                 return;
             }
@@ -459,9 +465,9 @@ impl AppMenu {
             self.generation.set(self.generation.get() + 1);
             self.shown.replace(Some(Shown {
                 folio: true,
-                nautilus_focused,
+                files: false,
                 app_id: String::new(),
-                windows: nautilus_windows,
+                windows: files_windows,
                 name: "Folio".to_owned(),
                 desktop_id: None,
                 menus: None,
@@ -469,6 +475,7 @@ impl AppMenu {
             self.redraw();
             return;
         }
+        let files = folio::is_files(focused.as_deref());
         let app_id = focused.unwrap_or_default();
         let windows = self.focus.borrow().windows_of(&app_id);
         match self.shown.borrow().as_ref() {
@@ -482,7 +489,12 @@ impl AppMenu {
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
 
-        let (name, desktop_id) = self.lookup(&app_id);
+        let (name, desktop_id) = if files {
+            // Files is Folio's file browser, so its menu is Folio's.
+            ("Folio".to_owned(), None)
+        } else {
+            self.lookup(&app_id)
+        };
         let desktop_stem = desktop_id
             .as_deref()
             .map(|id| id.strip_suffix(".desktop").unwrap_or(id).to_owned());
@@ -505,7 +517,7 @@ impl AppMenu {
             .and_then(|s| s.menus);
         self.shown.replace(Some(Shown {
             folio: false,
-            nautilus_focused: false,
+            files,
             app_id: app_id.clone(),
             windows,
             name,
@@ -524,6 +536,7 @@ impl AppMenu {
                         .await
                         .map(|source| Menus {
                             model: source.model(),
+                            _remote: None,
                             app: source.actions(),
                             win: None,
                             merges_window: source.has_window_menu(),
@@ -537,6 +550,9 @@ impl AppMenu {
             let Some(menu) = weak.upgrade() else {
                 return;
             };
+            if files {
+                menus = menus.map(|m| files_menus(m, &menu.files_window_menu));
+            }
             if menu.generation.get() != generation {
                 return;
             }
@@ -582,8 +598,14 @@ impl AppMenu {
             // after the popover, and the items follow the action's enabled flag.
             let folio = Rc::clone(&self.folio);
             let click = gtk::GestureClick::new();
-            click.connect_pressed(move |_, _, _, _| folio.query_files());
+            click.connect_pressed(move |_, _, _, _| folio.refresh());
             bar.add_controller(click);
+            bar
+        } else if shown.files {
+            let bar = gtk::PopoverMenuBar::from_model(Some(&self.model(shown)));
+            // About, Hide Folio, Cycle Through Windows: the same actions as
+            // the desktop's Folio menus.
+            bar.insert_action_group("folio", Some(self.folio.actions()));
             bar
         } else {
             gtk::PopoverMenuBar::from_model(Some(&self.model(shown)))
@@ -605,6 +627,16 @@ impl AppMenu {
     /// A menubar merges top-level sections, so the exported menubar is a
     /// section here.
     fn model(&self, shown: &Shown) -> gio::Menu {
+        if shown.files {
+            let bar = gio::Menu::new();
+            bar.append_submenu(Some("Folio"), &folio::Folio::files_app_menu());
+            match &shown.menus {
+                Some(menus) => bar.append_section(None, &menus.model),
+                // Until Files answers: Folio's Window menu still works.
+                None => bar.append_submenu(Some("Window"), &self.files_window_menu),
+            }
+            return bar;
+        }
         let name = menu_label(&shown.name);
         let app = gio::Menu::new();
         if shows_new_window(&shown.app_id, shown.desktop_id.is_some()) {
@@ -694,6 +726,76 @@ fn window_menu(window_list: &gio::Menu) -> gio::Menu {
     window
 }
 
+/// The Window menu for Files, as on the desktop: Minimize and Zoom act
+/// over foreign-toplevel, Show Progress Window is Files' own, and the
+/// window list ends it.
+fn files_window_menu(window_list: &gio::Menu) -> gio::Menu {
+    let window = gio::Menu::new();
+    window.append_section(
+        None,
+        &section(&[("Minimize", "elavo.minimize"), ("Zoom", "elavo.zoom")]),
+    );
+    window.append_section(
+        None,
+        &section(&[
+            ("Cycle Through Windows", "folio.cycle"),
+            ("Show Progress Window", "app.win-show-progress"),
+        ]),
+    );
+    window.append_section(
+        None,
+        &section(&[("Bring All to Front", "elavo.bring-all-to-front")]),
+    );
+    window.append_section(None, window_list);
+    window
+}
+
+/// Files' exported menus with the panel's Window menu in place of its own,
+/// so Window lists the windows and keeps its place before Help. Only the
+/// top level is copied; each menu under it stays Files' exported one.
+fn files_menus(menus: Menus, window: &gio::Menu) -> Menus {
+    let remote = menus.model.clone();
+    let mirror = gio::Menu::new();
+    let fill = {
+        let mirror = mirror.downgrade();
+        let window = window.clone();
+        move |remote: &gio::MenuModel| {
+            let Some(mirror) = mirror.upgrade() else {
+                return;
+            };
+            mirror.remove_all();
+            let mut has_window = false;
+            for i in 0..remote.n_items() {
+                let label = remote
+                    .item_attribute_value(i, "label", Some(glib::VariantTy::STRING))
+                    .and_then(|v| v.get::<String>())
+                    .unwrap_or_default();
+                if let Some(submenu) = remote.item_link(i, "submenu") {
+                    if label.replace('_', "").eq_ignore_ascii_case("window") {
+                        mirror.append_submenu(Some(&label), &window);
+                        has_window = true;
+                    } else {
+                        mirror.append_submenu(Some(&label), &submenu);
+                    }
+                } else if let Some(section) = remote.item_link(i, "section") {
+                    mirror.append_section(None, &section);
+                }
+            }
+            if !has_window {
+                mirror.append_submenu(Some("Window"), &window);
+            }
+        }
+    };
+    fill(&remote);
+    remote.connect_items_changed(move |remote, _, _, _| fill(remote));
+    Menus {
+        model: mirror.upcast(),
+        _remote: Some(remote),
+        merges_window: true,
+        ..menus
+    }
+}
+
 fn window_id(toplevel: &Toplevel) -> String {
     toplevel.key.protocol_id().to_string()
 }
@@ -760,6 +862,7 @@ async fn find_menus(app_id: &str, desktop_stem: Option<&str>, windows: usize) ->
     };
     Some(Menus {
         model: model.upcast(),
+        _remote: None,
         app: app.upcast(),
         win,
         merges_window: false,
