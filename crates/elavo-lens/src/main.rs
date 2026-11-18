@@ -234,7 +234,7 @@ struct Lens {
     window: gtk::ApplicationWindow,
     column: gtk::Box,
     bar: gtk::Box,
-    blur: RefCell<Option<elavo_common::blur::BackgroundBlur>>,
+    effects: elavo_common::effect::SurfaceEffects,
     blur_parts: RefCell<Vec<BlurPart>>,
     /// The column has been moved to its spot once. Until then it sits at
     /// the window's top-left corner, so it is not drawn or blurred.
@@ -402,7 +402,7 @@ impl Lens {
             window,
             column,
             bar,
-            blur: RefCell::new(None),
+            effects: elavo_common::effect::SurfaceEffects::new(),
             blur_parts: RefCell::default(),
             placed: Cell::new(false),
             entry,
@@ -450,7 +450,9 @@ impl Lens {
         } else {
             self.bar.compute_bounds(&self.window)
         };
+        let mut widgets: Vec<gtk::Widget> = Vec::new();
         if let Some(bounds) = bar {
+            widgets.push(self.bar.clone().upcast());
             parts.push((
                 bounds.x().round() as i32,
                 bounds.y().round() as i32,
@@ -461,6 +463,7 @@ impl Lens {
         }
         if self.results.is_visible() && !hidden {
             if let Some(bounds) = self.results.compute_bounds(&self.window) {
+                widgets.push(self.results.clone().upcast());
                 parts.push((
                     bounds.x().round() as i32,
                     bounds.y().round() as i32,
@@ -470,18 +473,17 @@ impl Lens {
                 ));
             }
         }
-        if self.blur.borrow().is_none() {
-            if let Some(blur) =
-                elavo_common::blur::BackgroundBlur::for_widget(self.window.upcast_ref())
-            {
-                *self.blur.borrow_mut() = Some(blur);
-            }
+        if *self.blur_parts.borrow() == parts {
+            return;
         }
-        if let Some(blur) = self.blur.borrow().as_ref() {
-            if *self.blur_parts.borrow() == parts {
-                return;
-            }
-            blur.set_rounds(&parts);
+        // BAR_RADIUS and RESULTS_RADIUS match style.css, which is where
+        // GTK 4.24 reads the shapes from.
+        let effects = widgets
+            .iter()
+            .zip(&parts)
+            .map(|(widget, part)| elavo_common::effect::EffectPart::blur(widget, *part))
+            .collect();
+        if self.effects.set(&self.window, effects) {
             *self.blur_parts.borrow_mut() = parts;
             // The region applies on the next surface commit.
             self.window.queue_draw();

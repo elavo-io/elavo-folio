@@ -6,6 +6,10 @@
 //!
 //! The registry roundtrip happens once per process. Doing it again from a
 //! menu's frame callback reenters GTK's display while the popup is mapping.
+//!
+//! Only for GTK before 4.24. From 4.24 GTK creates the surface's effect
+//! object itself, and a second one disconnects the client, so nothing here
+//! binds the effect global then. Use [`crate::effect`], which picks the path.
 
 use std::cell::RefCell;
 use std::os::raw::c_void;
@@ -50,6 +54,9 @@ impl BackgroundBlur {
     /// Read the blur global once, on the display `widget` is on. Menus can
     /// then attach without a roundtrip inside their frame callback.
     pub fn prepare_display(widget: &gtk::Widget) -> bool {
+        if crate::effect::gtk_owns_background_effect() {
+            return false;
+        }
         let Ok(display) = widget.display().downcast::<gdk4_wayland::WaylandDisplay>() else {
             return false;
         };
@@ -76,6 +83,9 @@ impl BackgroundBlur {
     /// `wl_display` and `wl_surface` are GTK's. Returns none when this
     /// compositor does not offer the protocol, or the pointers are null.
     pub fn attach(wl_display: *mut c_void, wl_surface: *mut c_void) -> Option<Self> {
+        if crate::effect::gtk_owns_background_effect() {
+            return None;
+        }
         if wl_display.is_null() || wl_surface.is_null() || !ensure(wl_display) {
             return None;
         }
@@ -97,6 +107,36 @@ impl BackgroundBlur {
             let _ = blur.conn.flush();
             Some(blur)
         })
+    }
+
+    /// Whether the compositor advertises `ext_background_effect_manager_v1`
+    /// on `widget`'s display. Lists the globals once per process on a
+    /// registry of its own, and binds nothing.
+    pub fn offered(widget: &gtk::Widget) -> bool {
+        thread_local! {
+            static OFFERED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+        }
+        if let Some(offered) = OFFERED.with(|o| o.get()) {
+            return offered;
+        }
+        let Ok(display) = widget.display().downcast::<gdk4_wayland::WaylandDisplay>() else {
+            return false;
+        };
+        let Some(wl_display) = display.wl_display_raw() else {
+            return false;
+        };
+        let backend = unsafe { Backend::from_foreign_display(wl_display.as_ptr().cast()) };
+        let conn = Connection::from_backend(backend);
+        let offered = registry_queue_init::<BlurState>(&conn)
+            .map(|(globals, _queue)| {
+                globals.contents().with_list(|list| {
+                    list.iter()
+                        .any(|global| global.interface == ExtBackgroundEffectManagerV1::interface().name)
+                })
+            })
+            .unwrap_or(false);
+        OFFERED.with(|o| o.set(Some(offered)));
+        offered
     }
 
     /// Replace the blur region with these rounded rectangles, in surface-local

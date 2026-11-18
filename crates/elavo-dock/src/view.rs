@@ -587,7 +587,7 @@ mod imp {
         pub shelf: OnceCell<gtk::Box>,
         pub radius_css: OnceCell<gtk::CssProvider>,
         pub radius_px: Cell<i32>,
-        pub blur: RefCell<Option<elavo_common::blur::BackgroundBlur>>,
+        pub effects: elavo_common::effect::SurfaceEffects,
         pub label: OnceCell<gtk::Label>,
         pub tick: RefCell<Option<gtk::TickCallbackId>>,
     }
@@ -1166,15 +1166,11 @@ impl DockView {
             bounds.height().round().max(0.0) as i32,
             radius,
         );
-        let imp = self.imp();
-        if imp.blur.borrow().is_none() {
-            if let Some(blur) = elavo_common::blur::BackgroundBlur::for_widget(self.upcast_ref()) {
-                *imp.blur.borrow_mut() = Some(blur);
-            }
-        }
-        if let Some(blur) = imp.blur.borrow().as_ref() {
-            blur.set_rounds(&[part]);
-        }
+        // `set_shelf_radius` gives the shelf the same radius in CSS, which is
+        // where GTK 4.24 reads the shape from.
+        self.imp()
+            .effects
+            .set(self, vec![elavo_common::effect::EffectPart::blur(shelf, part)]);
     }
 
     fn paint_icon(&self, state: &State, t: &TileState, dark: bool, snapshot: &gtk::Snapshot) {

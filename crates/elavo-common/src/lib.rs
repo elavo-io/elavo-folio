@@ -4,6 +4,7 @@
 
 pub mod apps;
 pub mod blur;
+pub mod effect;
 pub mod files;
 pub mod matching;
 pub mod pins;

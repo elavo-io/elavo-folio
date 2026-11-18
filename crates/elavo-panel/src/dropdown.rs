@@ -25,10 +25,11 @@ pub(crate) fn menu_blur_enabled() -> bool {
 /// Gap under the panel, and the closest a menu may come to the left edge.
 const GAP: i32 = 10;
 /// `$elavo-popover-radius`. The blur follows the menu's rounded corners.
+/// GTK 4.24 reads the same radius from the theme's `contents` node.
 const RADIUS: i32 = 14;
 
 struct BlurSlot {
-    blur: elavo_common::blur::BackgroundBlur,
+    effects: elavo_common::effect::SurfaceEffects,
     /// The popup surface this effect was bound to. A reposition can replace
     /// the surface without a new widget, and the old effect then does nothing.
     surface: usize,
@@ -269,6 +270,9 @@ fn sync_blur(popover: &gtk::Popover) -> bool {
     if surface.downcast_ref::<gdk::Popup>().is_none() {
         return false;
     }
+    let Some(contents) = contents_widget(popover) else {
+        return false;
+    };
     let Some((x, y, width, height)) = contents_rect(popover) else {
         return false;
     };
@@ -298,29 +302,33 @@ fn sync_blur(popover: &gtk::Popover) -> bool {
     }
     BLURS.with(|map| {
         let mut map = map.borrow_mut();
-        if let Entry::Vacant(entry) = map.entry(key) {
-            match elavo_common::blur::BackgroundBlur::for_widget(popover.upcast_ref()) {
-                Some(blur) => {
-                    trace!("{key:#x} attach surface {surface_id:#x}");
-                    entry.insert(BlurSlot {
-                        blur,
-                        surface: surface_id,
-                        part: (0, 0, 0, 0, -1),
-                    });
+        let effect = vec![elavo_common::effect::EffectPart::blur(&contents, part)];
+        match map.entry(key) {
+            Entry::Vacant(entry) => {
+                let effects = elavo_common::effect::SurfaceEffects::new();
+                if !effects.set(popover, effect) {
+                    trace!("{key:#x} attach failed");
+                    return false;
                 }
-                None => trace!("{key:#x} attach failed"),
+                trace!("{key:#x} attach surface {surface_id:#x} region {part:?}");
+                entry.insert(BlurSlot {
+                    effects,
+                    surface: surface_id,
+                    part,
+                });
+                true
+            }
+            Entry::Occupied(mut entry) => {
+                let slot = entry.get_mut();
+                if slot.part == part {
+                    return false;
+                }
+                trace!("{key:#x} region {:?} -> {part:?}", slot.part);
+                slot.effects.set(popover, effect);
+                slot.part = part;
+                true
             }
         }
-        let Some(slot) = map.get_mut(&key) else {
-            return false;
-        };
-        if slot.part == part {
-            return false;
-        }
-        trace!("{key:#x} region {:?} -> {part:?}", slot.part);
-        slot.blur.set_rounds(&[part]);
-        slot.part = part;
-        true
     })
 }
 
@@ -329,7 +337,7 @@ fn release_blur(popover: &gtk::Popover) {
     BLURS.with(|map| {
         if let Some(slot) = map.borrow_mut().remove(&key) {
             trace!("{key:#x} release");
-            slot.blur.release();
+            slot.effects.release();
         }
     });
 }
@@ -345,16 +353,21 @@ fn drop_blur(popover: &gtk::Popover) {
 /// The menu body, in the popover's own coordinates. The arrow is a sibling
 /// and is not part of the fill.
 fn contents_rect(popover: &gtk::Popover) -> Option<(i32, i32, i32, i32)> {
+    let bounds = contents_widget(popover)?.compute_bounds(popover.upcast_ref::<gtk::Widget>())?;
+    Some((
+        bounds.x().round() as i32,
+        bounds.y().round() as i32,
+        bounds.width().round().max(0.0) as i32,
+        bounds.height().round().max(0.0) as i32,
+    ))
+}
+
+/// The popover's `contents` node, the menu body that is blurred.
+fn contents_widget(popover: &gtk::Popover) -> Option<gtk::Widget> {
     let mut child = popover.first_child();
     while let Some(widget) = child {
         if widget.css_name().as_str() == "contents" {
-            let bounds = widget.compute_bounds(popover.upcast_ref::<gtk::Widget>())?;
-            return Some((
-                bounds.x().round() as i32,
-                bounds.y().round() as i32,
-                bounds.width().round().max(0.0) as i32,
-                bounds.height().round().max(0.0) as i32,
-            ));
+            return Some(widget);
         }
         child = widget.next_sibling();
     }

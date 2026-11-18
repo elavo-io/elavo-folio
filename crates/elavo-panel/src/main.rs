@@ -221,7 +221,7 @@ impl Panel {
         // translucent from its first frame; without it, every menu is opaque.
         window.connect_realize(|window| {
             if dropdown::menu_blur_enabled()
-                && elavo_common::blur::BackgroundBlur::prepare_display(window.upcast_ref())
+                && elavo_common::effect::available(window.upcast_ref())
             {
                 window.add_css_class("elavo-menu-blur");
             }
