@@ -591,7 +591,30 @@ impl Screen {
         self.views.borrow_mut().clear();
     }
 
-    /// The content for one output. The first one asked for holds the
+    /// Whether the account, the password field or the list, is in a view
+    /// that is on screen.
+    pub fn account_on_screen(&self) -> bool {
+        self.stack.is_mapped()
+    }
+
+    /// The window the account is in, if it is in one.
+    pub fn account_root(&self) -> Option<gtk::Root> {
+        self.stack.root()
+    }
+
+    /// Give the keyboard to the account, as when its view first appears.
+    pub fn focus_account(&self) {
+        if self.show == Show::Name {
+            self.name.grab_focus();
+        } else if self.chosen.get() {
+            self.password.grab_focus();
+        } else {
+            self.apply_list_focus();
+        }
+    }
+
+    /// The content for one output. The first one asked for after
+    /// `release_views`, or while the account has no view, holds the
     /// account.
     pub fn view(self: &Rc<Self>, monitor: Option<&gdk::Monitor>) -> gtk::Widget {
         if let Some(monitor) = monitor {
@@ -603,7 +626,10 @@ impl Screen {
                 }
             }
         }
-        let primary = self.views.borrow().is_empty();
+        // Not "the first view": a lock window whose output went away keeps
+        // its place in `views`, and the view for the output that replaces
+        // it has to take the account, or the lock has no password field.
+        let primary = self.stack.parent().is_none();
 
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Cover)
@@ -649,15 +675,8 @@ impl Screen {
             column.append(&self.stack);
             let weak = Rc::downgrade(self);
             column.connect_map(move |_| {
-                let Some(screen) = weak.upgrade() else {
-                    return;
-                };
-                if screen.show == Show::Name {
-                    screen.name.grab_focus();
-                } else if screen.chosen.get() {
-                    screen.password.grab_focus();
-                } else {
-                    screen.apply_list_focus();
+                if let Some(screen) = weak.upgrade() {
+                    screen.focus_account();
                 }
             });
         }

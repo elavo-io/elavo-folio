@@ -7,7 +7,14 @@
 //! elavo-greeter --demo [--lock] [--show list|name] [--demo-people N]
 //!                               the same screen in a window; the password is "elavo".
 //!                               --demo-people adds up to 8 made-up people to the list
+//! elavo-greeter --demo --lock --session-lock
+//!                               a real lock of the compositor it runs in, for testing
+//!                               in a nested session; the password is "elavo"
 //! ```
+//!
+//! `--lock` starts a keeper that starts the lock screen, and starts it again
+//! if it stops while the screen is still locked. Both write to
+//! `~/.local/state/elavo/lock.log`.
 
 mod accounts;
 mod avatar;
@@ -15,6 +22,7 @@ mod config;
 mod frost;
 mod glass;
 mod greetd;
+mod locklog;
 mod logind;
 mod nav;
 mod pam;
@@ -36,6 +44,13 @@ use config::Show;
 use screen::{Backend, Kind, Screen};
 
 const LOCK_APP_ID: &str = "io.elavo.Greeter.Lock";
+/// The lock screen's exit status when the compositor will not lock. The
+/// keeper does not start it again after this one.
+const LOCK_FAILED: u8 = 3;
+/// How often the lock checks that its password field is on screen, and how
+/// many checks in a row may miss it before the lock windows are rebuilt.
+const LOCK_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
+const LOCK_CHECK_MISSES: u32 = 2;
 /// How long the login window waits for the wallpaper before it appears.
 /// The lock does not wait: it covers the session first, and the picture
 /// arrives on the window that is already up.
@@ -102,6 +117,9 @@ fn after_wallpaper(screen: &Rc<Screen>, f: impl FnOnce() + 'static) {
 struct Args {
     lock: bool,
     foreground: bool,
+    /// The keeper `--lock` starts. Not for people to use.
+    keep: bool,
+    session_lock: bool,
     demo: bool,
     demo_people: usize,
     show: Option<Show>,
@@ -111,6 +129,8 @@ fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         lock: false,
         foreground: false,
+        keep: false,
+        session_lock: false,
         demo: false,
         demo_people: 0,
         show: None,
@@ -120,6 +140,8 @@ fn parse_args() -> Result<Args, String> {
         match arg.as_str() {
             "--lock" => args.lock = true,
             "--foreground" => args.foreground = true,
+            "--keep" => args.keep = true,
+            "--session-lock" => args.session_lock = true,
             "--demo" => args.demo = true,
             "--show" => {
                 args.show = Some(match iter.next().as_deref() {
@@ -139,6 +161,9 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.demo_people > 0 && !args.demo {
         return Err("--demo-people needs --demo".into());
+    }
+    if args.session_lock && !(args.demo && args.lock) {
+        return Err("--session-lock needs --demo --lock".into());
     }
     Ok(args)
 }
@@ -160,14 +185,41 @@ fn load_style() {
     gtk::IconTheme::for_display(&display).add_resource_path("/io/elavo/Greeter/icons");
 }
 
-/// Start the lock in a child and return once the compositor has locked the
-/// screen, so `swayidle`'s `before-sleep` waits for the lock.
-fn lock_and_detach() -> ExitCode {
+impl Args {
+    /// A lock of the compositor, real or for testing, rather than a window.
+    fn locks_session(&self) -> bool {
+        self.lock && (!self.demo || self.session_lock)
+    }
+
+    /// What the keeper and the lock screen are started with besides
+    /// `--lock`.
+    fn lock_flags(&self) -> &'static [&'static str] {
+        if self.demo {
+            &["--demo", "--session-lock"]
+        } else {
+            &[]
+        }
+    }
+}
+
+/// Reads the lock screen's one byte that says the screen is locked.
+fn wait_for_locked(child: &mut std::process::Child) -> bool {
+    let mut ready = [0u8; 1];
+    child
+        .stdout
+        .take()
+        .is_some_and(|mut out| matches!(out.read(&mut ready), Ok(1)))
+}
+
+/// Start the keeper and return once the compositor has locked the screen,
+/// so `swayidle`'s `before-sleep` waits for the lock.
+fn lock_and_detach(args: &Args) -> ExitCode {
     let Ok(exe) = std::env::current_exe() else {
         return ExitCode::FAILURE;
     };
     let mut child = match Command::new(exe)
-        .args(["--lock", "--foreground"])
+        .args(["--lock", "--keep"])
+        .args(args.lock_flags())
         .stdout(Stdio::piped())
         .spawn()
     {
@@ -177,17 +229,84 @@ fn lock_and_detach() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut ready = [0u8; 1];
-    let locked = child
-        .stdout
-        .take()
-        .is_some_and(|mut out| matches!(out.read(&mut ready), Ok(1)));
-    if locked {
+    if wait_for_locked(&mut child) {
         return ExitCode::SUCCESS;
     }
     match child.wait() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
+    }
+}
+
+/// Run the lock screen until it unlocks. If it stops while the screen is
+/// locked (a crash, or GTK giving up on the compositor), the compositor
+/// keeps the session locked with nothing to type into, so start it again.
+/// Never unlocks anything itself.
+fn keep_lock(args: &Args) -> ExitCode {
+    locklog::open();
+    let Ok(exe) = std::env::current_exe() else {
+        return ExitCode::FAILURE;
+    };
+    let mut first = true;
+    let mut restarts: Vec<std::time::Instant> = Vec::new();
+    loop {
+        let spawned = Command::new(&exe)
+            .args(["--lock", "--foreground"])
+            .args(args.lock_flags())
+            .stdout(Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(e) => {
+                locklog::note(&format!("could not start the lock screen: {e}"));
+                if first {
+                    return ExitCode::FAILURE;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                continue;
+            }
+        };
+        let locked = wait_for_locked(&mut child);
+        if first {
+            first = false;
+            if !locked {
+                // Not locked: the compositor refused, or a lock is already up
+                // and this one handed over to it.
+                let status = child.wait();
+                locklog::note(&format!("the lock screen ended without locking: {status:?}"));
+                return match status {
+                    Ok(status) if status.success() => ExitCode::SUCCESS,
+                    _ => ExitCode::FAILURE,
+                };
+            }
+            notify_locked();
+        } else if locked {
+            locklog::note("the lock screen is back");
+        }
+        let status = child.wait();
+        let code = status.as_ref().ok().and_then(|s| s.code());
+        match code {
+            Some(0) => {
+                locklog::note("unlocked");
+                return ExitCode::SUCCESS;
+            }
+            Some(c) if c == i32::from(LOCK_FAILED) || c == 2 => {
+                locklog::note(&format!(
+                    "the lock screen could not lock again ({status:?}); the compositor keeps the screen locked"
+                ));
+                return ExitCode::FAILURE;
+            }
+            _ => {}
+        }
+        locklog::note(&format!(
+            "the lock screen stopped while locked ({status:?}); starting it again"
+        ));
+        let now = std::time::Instant::now();
+        restarts.retain(|t| now.duration_since(*t) < std::time::Duration::from_secs(60));
+        restarts.push(now);
+        // Keep trying, but not in a tight loop if it keeps failing.
+        let pause = if restarts.len() > 5 { 5000 } else { 300 };
+        std::thread::sleep(std::time::Duration::from_millis(pause));
     }
 }
 
@@ -203,42 +322,192 @@ fn notify_locked() {
     }
 }
 
+fn describe(monitor: &gdk::Monitor) -> String {
+    let g = monitor.geometry();
+    format!(
+        "{} {}x{}+{}+{}",
+        monitor.connector().unwrap_or_default(),
+        g.width(),
+        g.height(),
+        g.x(),
+        g.y()
+    )
+}
+
+/// The lock's windows, one per output, and the check that the password
+/// field is on one of them.
+///
+/// gtk4-session-lock unmaps a window when its output goes away and asks
+/// for a new one when an output appears. After a suspend the laptop's panel
+/// can do both, and the new window used to get a view without the password
+/// field, which stayed in the old, unmapped window.
+struct LockWindows {
+    app: gtk::Application,
+    screen: Rc<Screen>,
+    windows: std::cell::RefCell<Vec<(gdk::Monitor, gtk::Window)>>,
+    locked: std::cell::Cell<bool>,
+    /// Checks in a row that did not find the password field on screen.
+    misses: std::cell::Cell<u32>,
+}
+
+impl LockWindows {
+    fn prune(&self) {
+        self.windows.borrow_mut().retain(|(monitor, _)| {
+            let valid = monitor.is_valid();
+            if !valid {
+                locklog::note(&format!("output {} is gone", describe(monitor)));
+            }
+            valid
+        });
+    }
+
+    /// Whether the account is in one of the live lock windows.
+    fn account_has_window(&self) -> bool {
+        let Some(root) = self.screen.account_root() else {
+            return false;
+        };
+        let root = root.upcast::<gtk::Widget>();
+        self.windows
+            .borrow()
+            .iter()
+            .any(|(_, window)| window.upcast_ref::<gtk::Widget>() == &root)
+    }
+
+    fn add(&self, instance: &gtk4_session_lock::Instance, monitor: &gdk::Monitor) {
+        locklog::note(&format!("output {} added", describe(monitor)));
+        self.prune();
+        let window = gtk::Window::builder()
+            .application(&self.app)
+            .title("Elavo Lock Screen")
+            .css_classes(["elavo-greeter-window"])
+            .build();
+        trace_first_frame(&window);
+        let rehome = !self.account_has_window();
+        let others = !self.windows.borrow().is_empty();
+        self.windows
+            .borrow_mut()
+            .push((monitor.clone(), window.clone()));
+        if rehome && (others || self.locked.get()) {
+            self.rebuild("the password field had no window");
+        } else if rehome {
+            self.rebuild("");
+        } else {
+            window.set_child(Some(&self.screen.view(Some(monitor))));
+        }
+        trace::mark("lock window built");
+        instance.assign_window_to_monitor(&window, monitor);
+    }
+
+    /// Build every live window's view again. The first takes the account.
+    /// The session stays locked throughout.
+    fn rebuild(&self, reason: &str) {
+        self.prune();
+        let windows = self.windows.borrow().clone();
+        if windows.is_empty() {
+            locklog::note("no output to show the lock on; waiting for one");
+            return;
+        }
+        if !reason.is_empty() {
+            locklog::note(&format!(
+                "rebuilding the lock on {} output(s): {reason}",
+                windows.len()
+            ));
+        }
+        self.screen.release_views();
+        for (monitor, window) in &windows {
+            window.set_child(Some(&self.screen.view(Some(monitor))));
+        }
+        self.misses.set(0);
+    }
+
+    fn check(&self) {
+        if !self.locked.get() {
+            return;
+        }
+        self.prune();
+        if self.windows.borrow().is_empty() {
+            // Nothing to show it on until an output comes back.
+            return;
+        }
+        if self.screen.account_on_screen() {
+            if self.misses.replace(0) > 0 {
+                locklog::note("the password field is on screen");
+            }
+            if let Some(root) = self.screen.account_root() {
+                if root.focus().is_none() {
+                    self.screen.focus_account();
+                }
+            }
+            return;
+        }
+        let misses = self.misses.get() + 1;
+        self.misses.set(misses);
+        locklog::note("the password field is not on screen");
+        if misses >= LOCK_CHECK_MISSES {
+            self.rebuild("the password field stayed off screen");
+        }
+    }
+}
+
 fn run_lock(app: &gtk::Application, backend: Backend) {
     if !gtk4_session_lock::is_supported() {
-        eprintln!("elavo-greeter: the compositor does not support ext-session-lock-v1");
-        std::process::exit(1);
+        locklog::note("the compositor does not support ext-session-lock-v1");
+        std::process::exit(i32::from(LOCK_FAILED));
     }
+    locklog::note(&format!(
+        "starting the lock (GSK_RENDERER={})",
+        std::env::var("GSK_RENDERER").unwrap_or_default()
+    ));
     let screen = Screen::new(Kind::Lock, backend, Show::List, 0);
     trace::mark("screen built");
     screen.preload(first_monitor_aspect());
     warm_up_renderer();
     let instance = gtk4_session_lock::Instance::new();
+    // Real locks tell logind. A test lock in a nested session does not
+    // touch the real session's state.
+    let hint = backend != Backend::Demo;
 
-    let app_for_windows = app.clone();
-    let screen_for_windows = screen.clone();
-    instance.connect_monitor(move |instance, monitor| {
-        let window = gtk::Window::builder()
-            .application(&app_for_windows)
-            .title("Elavo Lock Screen")
-            .css_classes(["elavo-greeter-window"])
-            .build();
-        window.set_child(Some(&screen_for_windows.view(Some(monitor))));
-        trace::mark("lock window built");
-        trace_first_frame(&window);
-        instance.assign_window_to_monitor(&window, monitor);
+    let windows = Rc::new(LockWindows {
+        app: app.clone(),
+        screen: screen.clone(),
+        windows: Default::default(),
+        locked: Default::default(),
+        misses: Default::default(),
     });
-    instance.connect_locked(|_| {
+    let for_monitors = windows.clone();
+    instance.connect_monitor(move |instance, monitor| {
+        for_monitors.add(instance, monitor);
+    });
+    if let Some(display) = gdk::Display::default() {
+        display
+            .monitors()
+            .connect_items_changed(|model, _, removed, added| {
+                locklog::note(&format!(
+                    "outputs changed: {removed} removed, {added} added, {} now",
+                    model.n_items()
+                ));
+            });
+    }
+    let for_locked = windows.clone();
+    instance.connect_locked(move |_| {
         trace::mark("locked");
+        locklog::note("locked");
+        for_locked.locked.set(true);
         notify_locked();
-        glib::spawn_future_local(logind::set_locked_hint(true));
+        if hint {
+            glib::spawn_future_local(logind::set_locked_hint(true));
+        }
     });
     instance.connect_failed(|_| {
-        eprintln!("elavo-greeter: the screen could not be locked");
-        std::process::exit(1);
+        locklog::note("the screen could not be locked");
+        std::process::exit(i32::from(LOCK_FAILED));
     });
-    instance.connect_unlocked(|_| {
-        glib::spawn_future_local(async {
-            logind::set_locked_hint(false).await;
+    instance.connect_unlocked(move |_| {
+        locklog::note("unlocking");
+        glib::spawn_future_local(async move {
+            if hint {
+                logind::set_locked_hint(false).await;
+            }
             // Exiting skips finalizing the lock windows; see the GTK 4.22.5
             // note in AGENTS.md.
             std::process::exit(0);
@@ -250,10 +519,29 @@ fn run_lock(app: &gtk::Application, backend: Backend) {
             instance.unlock();
         }
     });
+    let for_check = windows.clone();
+    glib::timeout_add_local(LOCK_CHECK, move || {
+        for_check.check();
+        glib::ControlFlow::Continue
+    });
+    let for_sleep = windows.clone();
+    logind::watch_sleep(move |going| {
+        if going {
+            locklog::note("going to sleep");
+        } else {
+            locklog::note("back from sleep");
+            // Check soon rather than on the next tick.
+            let windows = for_sleep.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+                windows.check();
+            });
+        }
+    });
     // Lock before the wallpaper finishes. before-sleep waits on this, and a
     // wait here lets the machine suspend with the session still showing.
     // The picture is already decoding and is applied when it arrives.
     trace::mark("requesting lock");
+    locklog::note("requesting lock");
     instance.lock();
     std::mem::forget(instance);
 }
@@ -444,12 +732,19 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if args.lock && !args.demo && !args.foreground {
-        return lock_and_detach();
+    if args.locks_session() {
+        if args.keep {
+            return keep_lock(&args);
+        }
+        if !args.foreground {
+            return lock_and_detach(&args);
+        }
+        locklog::open();
     }
 
     gio::resources_register_include!("elavo-greeter.gresource").expect("greeter resources");
 
+    // A test lock does not take the real lock's name on the session bus.
     let app = if args.lock && !args.demo {
         gtk::Application::builder()
             .application_id(LOCK_APP_ID)
@@ -474,6 +769,7 @@ fn main() -> ExitCode {
         let show = args.show.unwrap_or_else(config::load);
         match (args.lock, args.demo) {
             (true, false) => run_lock(app, Backend::Pam),
+            (true, true) if args.session_lock => run_lock(app, Backend::Demo),
             (true, true) => run_window(app, Kind::Lock, Backend::Demo, show, 0),
             (false, true) => run_window(app, Kind::Login, Backend::Demo, show, args.demo_people),
             (false, false) => run_window(app, Kind::Login, Backend::Greetd, show, 0),

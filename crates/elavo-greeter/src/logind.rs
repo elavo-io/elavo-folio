@@ -82,3 +82,32 @@ pub async fn set_locked_hint(locked: bool) {
         glib::g_warning!("elavo-greeter", "SetLockedHint: {e}");
     }
 }
+
+/// Calls `f(true)` as the machine goes to sleep and `f(false)` once it is
+/// back, from logind's PrepareForSleep. The subscription lasts for the life
+/// of the process.
+pub fn watch_sleep(f: impl Fn(bool) + 'static) {
+    glib::spawn_future_local(async move {
+        let bus = match gio::bus_get_future(gio::BusType::System).await {
+            Ok(bus) => bus,
+            Err(e) => {
+                glib::g_warning!("elavo-greeter", "system bus: {e}");
+                return;
+            }
+        };
+        let subscription = bus.subscribe_to_signal(
+            Some(LOGIN1),
+            Some(MANAGER),
+            Some("PrepareForSleep"),
+            Some(MANAGER_PATH),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |signal| {
+                if let Some((going,)) = signal.parameters.get::<(bool,)>() {
+                    f(going);
+                }
+            },
+        );
+        std::mem::forget(subscription);
+    });
+}
