@@ -42,7 +42,7 @@ The code in this repository is Folio's. These programs and libraries stay their 
 | async-channel | A queue for that window list. Linked. | MIT OR Apache-2.0 |
 | Elavo Files | The Files window, and the desktop's file operations, Undo, and Quick Look, over D-Bus. Not linked. | MIT |
 
-The Trash is GVfs `trash:///`. Show in Files calls `org.freedesktop.FileManager1.ShowItems`. Sleep, Restart, and Shut Down call `org.freedesktop.login1`. Badges, progress, and attention come from the `com.canonical.Unity.LauncherEntry` signal. Those are desktop interfaces. The panel's sun, its search glass, and the dock's About tile are icon names (`elavo-sun-symbolic`, `elavo-edit-find-symbolic`, `io.elavo.Panel`) from the Elavo icon theme in `elavo-visuals`. Only the larger sun in the About window is compiled in.
+The Trash is GVfs `trash:///`. Show in Files calls `org.freedesktop.FileManager1.ShowItems`. Sleep, Restart, and Shut Down call `org.freedesktop.login1`. Badges, progress, and attention come from the `com.canonical.Unity.LauncherEntry` signal. An application launched from elsewhere (Files, the desktop, Lens, `gio launch`) bounces too: GLib's `org.gtk.gio.DesktopAppInfo.Launched` signal names its desktop file, and an application started over D-Bus (`DBusActivatable=true`) is seen when it first takes its bus name. Those are desktop interfaces. The panel's sun, its search glass, and the dock's About tile are icon names (`elavo-sun-symbolic`, `elavo-edit-find-symbolic`, `io.elavo.Panel`) from the Elavo icon theme in `elavo-visuals`. Only the larger sun in the About window is compiled in.
 
 ## What is in this repository
 
@@ -80,6 +80,7 @@ The session starts `graphical-session.target` from labwc's autostart. The four p
 - `$XDG_CONFIG_HOME/elavo/dock-others` lists the files and folders after the divider: a URI per line, then tab-separated `sort=`, `display=`, and `view=` options. A missing file is seeded with Downloads.
 - `$XDG_STATE_HOME/elavo/dock-recents` holds the last three applications that quit without being kept.
 - `$XDG_CONFIG_HOME/elavo/dock.conf` is a key file, group `[Dock]`. The settings page writes it and the dock watches it.
+- `$XDG_RUNTIME_DIR/elavo/<WAYLAND_DISPLAY>/dock-targets` is written by the dock: where each icon rests and where the next minimized window's tile will land, for Elavo's labwc to pour windows into and out of the dock. The same directory's `minimized/<n>.png` and `<n>.meta` are pictures of minimized windows that labwc leaves there; the dock shows each in its window's tile, with the application's icon as a badge. With stock labwc neither exists, and a minimized window shows as its application's icon on a card.
 
 ## Not yet
 
@@ -88,7 +89,6 @@ The session starts `graphical-session.target` from labwc's autostart. The four p
 - The calendar icon's `org.elavo.CalendarIcon.Changed` reload.
 - The control center, opened from the status icons.
 - Menus for Firefox and Chromium-based browsers on Wayland, and for Electron applications. They publish none the panel can read, and get the panel's menus only.
-- Minimize effects and window thumbnails labwc does not provide. A minimized window shows as its application's icon on a card.
 - An RPM. The image copies the release binaries for now.
 
 ## License

@@ -51,8 +51,10 @@ pub enum TileIcon {
     Icon(gio::Icon),
     /// Up to three icons piled on each other, front first.
     Stack(Vec<gio::Icon>),
-    /// A minimized window: a card with the application's icon.
-    Window(gio::Icon),
+    /// A minimized window: the picture of the window the compositor took
+    /// as it minimized, with the application's icon as a badge. Without a
+    /// picture, a card with the application's icon.
+    Window(gio::Icon, Option<gdk::Texture>),
 }
 
 #[derive(Clone)]
@@ -987,6 +989,42 @@ impl DockView {
         self.animate();
     }
 
+    /// Where each tile's icon rests, unmagnified and shown, in surface
+    /// coordinates, and where a newly minimized window's tile will land
+    /// (when the dock gives windows their own tiles): the compositor pours
+    /// windows into and out of these.
+    pub fn resting_icons(&self) -> (Vec<(String, graphene::Rect)>, Option<graphene::Rect>) {
+        let state = self.imp().state.borrow();
+        let g = &state.geom;
+        let v = g.margin + (g.thickness() - g.size) / 2.0;
+        let mut icons = Vec::new();
+        for t in &state.tiles {
+            if t.leaving || t.tile.section == Section::Divider || t.len <= 0.0 {
+                continue;
+            }
+            let center = t.start + t.len / 2.0;
+            icons.push((
+                t.tile.key.clone(),
+                state.to_rect(center - g.size / 2.0, v, g.size, g.size),
+            ));
+        }
+        // A new window tile goes in before the trash, and the dock, centered,
+        // grows by one tile: it lands half a tile before the trash is now.
+        let slot = (!state.settings.minimize_to_application)
+            .then(|| {
+                state
+                    .tiles
+                    .iter()
+                    .find(|t| !t.leaving && t.tile.section == Section::Trash)
+            })
+            .flatten()
+            .map(|t| {
+                let center = t.start + t.len / 2.0 - (g.size + g.gap) / 2.0;
+                state.to_rect(center - g.size / 2.0, v, g.size, g.size)
+            });
+        (icons, slot)
+    }
+
     /// The rectangle a menu or stack for `key` points at: a line across the
     /// tile just outside the shelf and its magnified icon.
     pub fn tile_rect(&self, key: &str) -> Option<gdk::Rectangle> {
@@ -1168,9 +1206,10 @@ impl DockView {
         );
         // `set_shelf_radius` gives the shelf the same radius in CSS, which is
         // where GTK 4.24 reads the shape from.
-        self.imp()
-            .effects
-            .set(self, vec![elavo_common::effect::EffectPart::blur(shelf, part)]);
+        self.imp().effects.set(
+            self,
+            vec![elavo_common::effect::EffectPart::blur(shelf, part)],
+        );
     }
 
     fn paint_icon(&self, state: &State, t: &TileState, dark: bool, snapshot: &gtk::Snapshot) {
@@ -1214,7 +1253,42 @@ impl DockView {
                     snapshot.restore();
                 }
             }
-            TileIcon::Window(gicon) => {
+            TileIcon::Window(gicon, Some(picture)) => {
+                // The window, fitted to the tile, rounded like a window.
+                let (pw, ph) = (picture.width() as f32, picture.height() as f32);
+                let room = size * 0.92;
+                let fit = (room / pw.max(1.0)).min(room / ph.max(1.0));
+                let (w, h) = (pw * fit, ph * fit);
+                let card = graphene::Rect::new(
+                    rect.x() + (size - w) / 2.0,
+                    rect.y() + (size - h) / 2.0,
+                    w,
+                    h,
+                );
+                let radius = size * 0.05;
+                let rounded = gsk::RoundedRect::from_rect(card, radius);
+                snapshot.append_outset_shadow(
+                    &rounded,
+                    &gdk::RGBA::new(0.0, 0.0, 0.0, 0.28),
+                    0.0,
+                    size * 0.015,
+                    0.0,
+                    size * 0.04,
+                );
+                snapshot.push_rounded_clip(&rounded);
+                snapshot.append_scaled_texture(picture, gsk::ScalingFilter::Trilinear, &card);
+                snapshot.pop();
+                // The application's icon in the lower right corner.
+                let b = size * 0.42;
+                let r = graphene::Rect::new(
+                    rect.x() + size - b - size * 0.02,
+                    rect.y() + size - b - size * 0.02,
+                    b,
+                    b,
+                );
+                self.draw(snapshot, gicon, &r, lookup * 0.42);
+            }
+            TileIcon::Window(gicon, None) => {
                 let inset = size * 0.08;
                 let card = graphene::Rect::new(
                     rect.x() + inset,
@@ -1743,7 +1817,7 @@ impl DockView {
                 return None;
             }
             let icon = match &t.tile.icon {
-                Some(TileIcon::Icon(g) | TileIcon::Window(g)) => Some(g.clone()),
+                Some(TileIcon::Icon(g) | TileIcon::Window(g, _)) => Some(g.clone()),
                 Some(TileIcon::Stack(icons)) => icons.first().cloned(),
                 None => None,
             };

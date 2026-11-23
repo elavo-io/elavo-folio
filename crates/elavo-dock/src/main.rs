@@ -5,6 +5,8 @@ mod app_procs;
 mod badges;
 mod drop_focus;
 mod files;
+mod genie;
+mod launches;
 mod menus;
 mod model;
 mod others;
@@ -67,6 +69,11 @@ pub struct Dock {
     /// Force Quit can find them after the bounce ends.
     launch_pids: RefCell<HashMap<String, Vec<i32>>>,
     badges: badges::Badges,
+    launches: launches::Launches,
+    /// The picture of each minimized window, and its number in the
+    /// compositor's directory.
+    pictures: RefCell<HashMap<ObjectId, (u64, gdk::Texture)>>,
+    targets_pending: Cell<Option<glib::SourceId>>,
     trash: trash::Trash,
     dragging: RefCell<Option<String>>,
     settings_window: glib::WeakRef<gtk::Window>,
@@ -120,6 +127,9 @@ impl Dock {
             focus_after_drop: RefCell::default(),
             launch_pids: RefCell::default(),
             badges: badges::Badges::default(),
+            launches: launches::Launches::default(),
+            pictures: RefCell::default(),
+            targets_pending: Cell::new(None),
             trash: trash::Trash::default(),
             dragging: RefCell::default(),
             settings_window: glib::WeakRef::new(),
@@ -170,6 +180,13 @@ impl Dock {
         dock.badges.start(move || {
             if let Some(dock) = weak.upgrade() {
                 dock.refresh();
+            }
+        });
+        // Launches from Files, the desktop, Lens and anything else bounce too.
+        let weak = Rc::downgrade(&dock);
+        dock.launches.start(move |seen| {
+            if let Some(dock) = weak.upgrade() {
+                dock.launched_elsewhere(seen);
             }
         });
         let weak = Rc::downgrade(&dock);
@@ -257,8 +274,10 @@ impl Dock {
                     self.minimized_at
                         .borrow_mut()
                         .insert(toplevel.key.clone(), n);
+                    self.load_picture(&toplevel, true);
                 } else if !toplevel.minimized {
                     self.minimized_at.borrow_mut().remove(&toplevel.key);
+                    self.pictures.borrow_mut().remove(&toplevel.key);
                 }
                 if is_new {
                     self.maybe_focus_after_drop(&toplevel);
@@ -268,6 +287,7 @@ impl Dock {
                 self.toplevels.borrow_mut().retain(|t| t.key != key);
                 self.last_active.borrow_mut().remove(&key);
                 self.minimized_at.borrow_mut().remove(&key);
+                self.pictures.borrow_mut().remove(&key);
             }
         }
         self.refresh();
@@ -359,6 +379,37 @@ impl Dock {
         sections
             .minimized
             .sort_by_key(|k| minimized_at.get(k).copied().unwrap_or(0));
+        // An application launched from elsewhere that has no icon yet gets
+        // one while it bounces, where its running icon will appear.
+        let launching_now = self.launching.borrow();
+        let mut launching: Vec<(&String, &Instant)> = launching_now
+            .iter()
+            .filter(|(_, at)| at.elapsed() < LAUNCH_TIMEOUT)
+            .collect();
+        launching.sort_by_key(|(_, at)| **at);
+        for (id, _) in launching {
+            let present = sections
+                .apps
+                .iter()
+                .chain(&sections.recents)
+                .any(|i| i.desktop_id.as_deref() == Some(id.as_str()));
+            if present || !index.get(id).is_some_and(|e| e.shown) {
+                continue;
+            }
+            let item = Item {
+                desktop_id: Some(id.clone()),
+                app_id: None,
+                pinned: false,
+                recent: settings.show_recents,
+                windows: Vec::new(),
+                focused: false,
+            };
+            if settings.show_recents {
+                sections.recents.insert(0, item);
+            } else {
+                sections.apps.push(item);
+            }
+        }
         sections
     }
 
@@ -392,6 +443,101 @@ impl Dock {
         for (_, view) in self.views.borrow().iter() {
             view.set_tiles(tiles.clone());
         }
+        self.schedule_targets();
+    }
+
+    /// The compositor snapshots a window as it minimizes, before the dock
+    /// hears. Pick that picture up; once more shortly if it is not there.
+    fn load_picture(self: &Rc<Self>, toplevel: &Toplevel, retry: bool) {
+        let taken: Vec<u64> = self.pictures.borrow().values().map(|(n, _)| *n).collect();
+        let found = genie::find_picture(&toplevel.app_id, &toplevel.title, &taken)
+            .and_then(|p| gdk::Texture::from_filename(&p.png).ok().map(|t| (p.n, t)));
+        match found {
+            Some(picture) => {
+                self.pictures
+                    .borrow_mut()
+                    .insert(toplevel.key.clone(), picture);
+            }
+            None if retry => {
+                let weak = Rc::downgrade(self);
+                let key = toplevel.key.clone();
+                glib::timeout_add_local_once(Duration::from_millis(200), move || {
+                    let Some(dock) = weak.upgrade() else {
+                        return;
+                    };
+                    let toplevel = dock
+                        .toplevels
+                        .borrow()
+                        .iter()
+                        .find(|t| t.key == key && t.minimized)
+                        .cloned();
+                    if let Some(toplevel) = toplevel {
+                        dock.load_picture(&toplevel, false);
+                        dock.refresh();
+                    }
+                });
+            }
+            None => {}
+        }
+    }
+
+    /// Write where icons rest once the tiles have settled.
+    fn schedule_targets(self: &Rc<Self>) {
+        if let Some(id) = self.targets_pending.take() {
+            id.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let id = glib::timeout_add_local_once(Duration::from_millis(350), move || {
+            if let Some(dock) = weak.upgrade() {
+                dock.targets_pending.set(None);
+                dock.write_targets();
+            }
+        });
+        self.targets_pending.set(Some(id));
+    }
+
+    fn write_targets(&self) {
+        let animate = gtk::Settings::default().is_none_or(|s| s.is_gtk_enable_animations());
+        let mut targets = genie::Targets::new(animate);
+        let sections = self.sections.borrow();
+        let toplevels = self.toplevels.borrow();
+        for (window, view) in self.views.borrow().iter() {
+            use gtk4_layer_shell::LayerShell;
+            let Some(output) = window.monitor().and_then(|m| m.connector()) else {
+                continue;
+            };
+            let (icons, slot) = view.resting_icons();
+            let rect_of = |key: &str| icons.iter().find(|(k, _)| k == key).map(|(_, r)| *r);
+            if let Some(slot) = slot {
+                targets.slot(&output, &slot);
+            }
+            for item in sections.apps.iter().chain(&sections.recents) {
+                let Some(r) = rect_of(&app_key(item)) else {
+                    continue;
+                };
+                let mut ids: Vec<&str> = item
+                    .windows
+                    .iter()
+                    .filter_map(|k| toplevels.iter().find(|t| &t.key == k))
+                    .map(|t| t.app_id.as_str())
+                    .collect();
+                ids.extend(item.app_id.as_deref());
+                ids.sort_unstable();
+                ids.dedup();
+                for id in ids {
+                    targets.app(&output, id, &r);
+                }
+            }
+            for key in &sections.minimized {
+                let Some(t) = toplevels.iter().find(|t| &t.key == key) else {
+                    continue;
+                };
+                if let Some(r) = rect_of(&window_key(key)) {
+                    targets.window(&output, &t.app_id, &t.title, &r);
+                }
+            }
+        }
+        targets.write();
     }
 
     fn tiles(&self) -> Vec<Tile> {
@@ -446,7 +592,10 @@ impl Dock {
             tiles.push(Tile {
                 key: window_key(key),
                 section: Section::Windows,
-                icon: Some(TileIcon::Window(app_icon(entry, Some(&window.app_id)))),
+                icon: Some(TileIcon::Window(
+                    app_icon(entry, Some(&window.app_id)),
+                    self.pictures.borrow().get(key).map(|(_, t)| t.clone()),
+                )),
                 label: if window.title.is_empty() {
                     entry.map(|e| e.name.clone()).unwrap_or_default()
                 } else {
@@ -712,6 +861,57 @@ impl Dock {
                 controller.activate(toplevel);
             }
         }
+    }
+
+    /// A launch the dock heard about on the session bus. Bounce the icon as
+    /// for a launch from the dock, when the application has no window yet.
+    fn launched_elsewhere(self: &Rc<Self>, seen: launches::Seen) {
+        let id = match seen {
+            launches::Seen::DesktopFile(path) if path.is_absolute() => {
+                self.desktop_id_for(&gio::File::for_path(&path))
+            }
+            launches::Seen::DesktopFile(path) => {
+                let id = path.to_string_lossy().into_owned();
+                self.index.borrow().get(&id).map(|e| e.id.clone())
+            }
+            // Only an application GLib starts over D-Bus; another program
+            // taking a name that matches a desktop file is not a launch.
+            launches::Seen::BusName(name) => self
+                .index
+                .borrow()
+                .get(&format!("{name}.desktop"))
+                .filter(|e| e.info.boolean("DBusActivatable"))
+                .map(|e| e.id.clone()),
+        };
+        let Some(id) = id else {
+            return;
+        };
+        let shown = self.index.borrow().get(&id).is_some_and(|e| e.shown);
+        if !shown
+            || !pins::waits_for_a_window(&id)
+            || model::background_service(&id)
+            || self.launching.borrow().contains_key(&id)
+            || self.has_window(&id)
+        {
+            return;
+        }
+        glib::g_debug!("elavo-dock", "launch seen on the bus: {id}");
+        self.launching.borrow_mut().insert(id, Instant::now());
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(LAUNCH_TIMEOUT, move || {
+            if let Some(dock) = weak.upgrade() {
+                dock.refresh();
+            }
+        });
+        self.refresh();
+    }
+
+    fn has_window(&self, id: &str) -> bool {
+        let index = self.index.borrow();
+        self.toplevels
+            .borrow()
+            .iter()
+            .any(|t| index.match_app_id(&t.app_id).is_some_and(|e| e.id == id))
     }
 
     pub fn is_launching(&self, id: &str) -> bool {
