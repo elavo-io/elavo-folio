@@ -26,6 +26,7 @@ install -Dm644 data/polkit/io.elavo.greeter.policy \
 install -Dm644 data/tmpfiles/elavo-greeter.conf \
     "${dest}${prefix}/lib/tmpfiles.d/elavo-greeter.conf"
 install -Dm644 data/pam/elavo-lock "${dest}${sysconfdir}/pam.d/elavo-lock"
+install -Dm644 data/pam/elavo-passwd "${dest}${sysconfdir}/pam.d/elavo-passwd"
 
 # The administrator password prompt (polkit agent). The image's
 # elavo-polkit-agent.service user unit starts it.

@@ -1,0 +1,7 @@
+#%PAM-1.0
+# The login window changes an expired password here, then signs in through
+# greetd again. greetd's own stack stops at an expired password.
+# FreeIPA: the HBAC rule for this computer must allow service elavo-passwd.
+auth       include      password-auth
+account    include      password-auth
+password   include      password-auth

@@ -151,8 +151,9 @@ dependencies = [
 
 [[package]]
 name = "elavo-greeter"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
+ "async-channel",
  "glib-build-tools",
  "gtk4",
  "gtk4-session-lock",

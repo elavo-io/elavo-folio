@@ -1,8 +1,15 @@
 //! The people who can sign in: AccountsService when it answers, otherwise
-//! the ordinary accounts in `/etc/passwd`. Pictures are AccountsService's
-//! `IconFile`, which any user may read.
+//! the ordinary accounts in `/etc/passwd`. Directory accounts (Active
+//! Directory, FreeIPA) are in neither list, so the ones that have used this
+//! computer are added: a home in `/home`, or a wallpaper their session
+//! published for the greeter. SELinux keeps the greeter (`xdm_t`) from
+//! listing `/home`, so on the image the published wallpapers are what
+//! finds them. Their UIDs are large (hundreds of millions and up), so a
+//! person is any account from UID 1000 with a login shell, except nobody.
+//! Pictures are AccountsService's `IconFile`, which any user may read.
 
 use std::collections::HashMap;
+use std::ffi::{CStr, CString};
 use std::path::PathBuf;
 
 use gtk::gio;
@@ -13,6 +20,19 @@ const ACCOUNTS: &str = "org.freedesktop.Accounts";
 const ACCOUNTS_PATH: &str = "/org/freedesktop/Accounts";
 const USER: &str = "org.freedesktop.Accounts.User";
 const LAST_USER: &str = "/var/lib/elavo/greeter/last-user";
+const HOMES: &str = "/home";
+/// The first UID for people. Below are system accounts.
+const FIRST_UID: u32 = 1000;
+/// nobody, and the two "no UID" values.
+const NOT_PEOPLE: [u32; 3] = [65534, u32::MAX - 1, u32::MAX];
+
+/// Whether an account with this UID and shell is a person.
+fn is_person(uid: u32, shell: &str) -> bool {
+    uid >= FIRST_UID
+        && !NOT_PEOPLE.contains(&uid)
+        && !shell.ends_with("nologin")
+        && !shell.ends_with("false")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
@@ -90,16 +110,18 @@ fn system_bus() -> Option<gio::DBusConnection> {
 
 /// Every account that can sign in, by name.
 pub fn list() -> Vec<Account> {
-    let mut accounts = system_bus()
+    let bus = system_bus();
+    let mut accounts = bus
+        .as_ref()
         .and_then(|bus| {
-            let reply = call(&bus, ACCOUNTS_PATH, ACCOUNTS, "ListCachedUsers", None)?;
+            let reply = call(bus, ACCOUNTS_PATH, ACCOUNTS, "ListCachedUsers", None)?;
             let paths = reply
                 .child_value(0)
                 .get::<Vec<gtk::glib::variant::ObjectPath>>()?;
             Some(
                 paths
                     .iter()
-                    .filter_map(|p| from_path(&bus, p.as_str()))
+                    .filter_map(|p| from_path(bus, p.as_str()))
                     .collect::<Vec<_>>(),
             )
         })
@@ -109,6 +131,20 @@ pub fn list() -> Vec<Account> {
                 .map(|text| from_passwd(&text))
                 .unwrap_or_default()
         });
+    let known = home_names()
+        .into_iter()
+        .filter_map(|name| lookup(Key::Name(&name)))
+        .chain(
+            published_uids()
+                .into_iter()
+                .filter_map(|uid| lookup(Key::Uid(uid))),
+        );
+    for found in known {
+        if accounts.iter().any(|a| a.uid == found.uid) {
+            continue;
+        }
+        accounts.push(with_picture(bus.as_ref(), found));
+    }
     accounts.sort_by_key(|a| a.display_name().to_lowercase());
     accounts
 }
@@ -127,7 +163,7 @@ pub fn current() -> Account {
         let path = reply.child_value(0);
         from_path(&bus, path.str()?)
     });
-    found.unwrap_or_else(|| {
+    found.or_else(|| lookup(Key::Uid(uid))).unwrap_or_else(|| {
         let name = std::env::var("USER").unwrap_or_default();
         let real_name = std::fs::read_to_string("/etc/passwd")
             .ok()
@@ -169,12 +205,120 @@ fn from_passwd_all(text: &str) -> Vec<Account> {
         .collect()
 }
 
-/// Ordinary accounts: UIDs from 1000 to 59999 with a login shell.
+/// People in a passwd file: from UID 1000 with a login shell. No upper
+/// limit, so directory accounts in an `/etc/passwd`-style list are kept.
 fn from_passwd(text: &str) -> Vec<Account> {
     from_passwd_all(text)
         .into_iter()
-        .filter(|a| (1000..60000).contains(&a.uid))
+        .filter(|a| is_person(a.uid, "/bin/sh"))
         .collect()
+}
+
+/// Folder names in `/home`.
+fn home_names() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(HOMES) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    names.sort();
+    names
+}
+
+/// UIDs whose sessions published a wallpaper for the greeter.
+fn published_uids() -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir(crate::wallpaper::PUBLISHED) else {
+        return Vec::new();
+    };
+    let mut uids: Vec<u32> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse().ok())
+        .collect();
+    uids.sort_unstable();
+    uids
+}
+
+/// `found`, from the system's user database (sssd included), with
+/// AccountsService's name and picture when it knows the account.
+fn with_picture(bus: Option<&gio::DBusConnection>, found: Account) -> Account {
+    let from_accounts = bus.and_then(|bus| {
+        let reply = call(
+            bus,
+            ACCOUNTS_PATH,
+            ACCOUNTS,
+            "FindUserByName",
+            Some((found.name.as_str(),).to_variant()),
+        )?;
+        let path = reply.child_value(0);
+        from_path(bus, path.str()?)
+    });
+    match from_accounts {
+        Some(account) if account.uid == found.uid => account,
+        _ => found,
+    }
+}
+
+enum Key<'a> {
+    Name(&'a str),
+    Uid(u32),
+}
+
+/// One account from the system's user database, if it is a person.
+fn lookup(key: Key) -> Option<Account> {
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    let status = match key {
+        Key::Name(name) => {
+            let name = CString::new(name).ok()?;
+            unsafe {
+                libc::getpwnam_r(
+                    name.as_ptr(),
+                    &mut entry,
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                    &mut result,
+                )
+            }
+        }
+        Key::Uid(uid) => unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut entry,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut result,
+            )
+        },
+    };
+    if status != 0 || result.is_null() {
+        return None;
+    }
+    let text = |p: *const libc::c_char| {
+        if p.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+    };
+    let shell = text(entry.pw_shell);
+    if !is_person(entry.pw_uid, &shell) {
+        return None;
+    }
+    Some(Account {
+        uid: entry.pw_uid,
+        name: text(entry.pw_name),
+        real_name: text(entry.pw_gecos)
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .to_owned(),
+        icon: None,
+    })
 }
 
 const DEMO_PEOPLE: [&str; 8] = [
@@ -228,6 +372,7 @@ greetd:x:968:968::/var/lib/greetd:/sbin/nologin
 ada:x:1000:1000:Ada Lovelace,,,:/home/ada:/bin/bash
 bot:x:1001:1001::/home/bot:/usr/bin/false
 nobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin
+odd:x:65534:65534::/:/bin/bash
 ";
 
     #[test]
@@ -238,6 +383,26 @@ nobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin
         assert_eq!(accounts[0].real_name, "Ada Lovelace");
         assert_eq!(accounts[0].display_name(), "Ada Lovelace");
         assert_eq!(accounts[0].initial(), "A");
+    }
+
+    #[test]
+    fn directory_uids_are_people() {
+        // Samba AD and FreeIPA in the test lab.
+        assert!(is_person(1_738_201_105, "/bin/bash"));
+        assert!(is_person(282_600_005, "/bin/bash"));
+        assert!(is_person(60_100, "/bin/bash"));
+        assert!(!is_person(999, "/bin/bash"));
+        assert!(!is_person(65534, "/bin/bash"));
+        assert!(!is_person(u32::MAX - 1, "/bin/bash"));
+        assert!(!is_person(1000, "/sbin/nologin"));
+        let text = "ada:*:1738201105:1738200513:Ada Lovelace:/home/ada:/bin/bash\n";
+        assert_eq!(from_passwd(text)[0].uid, 1_738_201_105);
+    }
+
+    #[test]
+    fn root_is_not_a_person() {
+        assert_eq!(lookup(Key::Uid(0)), None);
+        assert_eq!(lookup(Key::Name("elavo-no-such-user")), None);
     }
 
     #[test]

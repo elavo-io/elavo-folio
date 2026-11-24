@@ -1,5 +1,9 @@
 #%PAM-1.0
-# elavo-greeter --lock checks the signed-in person's password here. Login
-# goes through greetd's own stack, which also unlocks the keyring.
-auth       required     pam_unix.so
-account    required     pam_unix.so
+# elavo-greeter --lock checks the signed-in person's password here. It uses
+# the system's password-auth stack, so directory accounts (sssd) unlock like
+# local ones, runs the account check, and can change an expired password.
+# Login goes through greetd's own stack, which also unlocks the keyring.
+# FreeIPA: the HBAC rule for this computer must allow service elavo-lock.
+auth       include      password-auth
+account    include      password-auth
+password   include      password-auth

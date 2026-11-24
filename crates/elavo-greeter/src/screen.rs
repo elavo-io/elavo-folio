@@ -15,8 +15,9 @@ use gtk::{gdk, gio, glib, pango};
 
 use crate::accounts::{self, Account};
 use crate::config::Show;
+use crate::conv::{Event, Failure, Talk, Worker};
 use crate::glass::GlassClock;
-use crate::greetd::{self, Failure};
+use crate::greetd;
 use crate::logind::{self, Power};
 use crate::pam;
 use crate::status::Status;
@@ -34,6 +35,7 @@ const LIST_HEIGHT: i32 = 320;
 /// Every list row is this wide, so the photos share one left edge.
 const LIST_WIDTH: i32 = 300;
 const INTERFACE: &str = "org.gnome.desktop.interface";
+const PASSWORD_HINT: &str = "Enter Password";
 
 /// A rectangle in pixels: x, y, width, height.
 pub type Rect = (i32, i32, i32, i32);
@@ -133,6 +135,9 @@ pub struct Screen {
     confirm_title: gtk::Label,
     confirm_button: gtk::Button,
     pending: Cell<Option<Power>>,
+    /// Set while a check waits for a further answer (a second factor, a
+    /// new password). The password field takes it; `None` backs out.
+    asking: RefCell<Option<std::sync::mpsc::Sender<Option<String>>>>,
     on_unlock: RefCell<Option<Box<dyn Fn()>>>,
     /// Set once the first wallpaper has loaded or failed to.
     wallpaper_ready: Cell<bool>,
@@ -165,7 +170,7 @@ fn password_entry() -> gtk::Entry {
     let entry = gtk::Entry::builder()
         .visibility(false)
         .input_purpose(gtk::InputPurpose::Password)
-        .placeholder_text("Enter Password")
+        .placeholder_text(PASSWORD_HINT)
         .secondary_icon_name("go-next-symbolic")
         .secondary_icon_activatable(true)
         .secondary_icon_tooltip_text("Sign In")
@@ -432,6 +437,7 @@ impl Screen {
             confirm_title,
             confirm_button,
             pending: Cell::new(None),
+            asking: RefCell::default(),
             on_unlock: RefCell::default(),
             wallpaper_ready: Cell::new(false),
             on_ready: RefCell::default(),
@@ -493,10 +499,19 @@ impl Screen {
 
         // List mode's Escape is handled on the screen (back to the list, or
         // nothing when there is only one account). Name mode still clears.
+        // Escape during a further prompt backs out of the whole check.
         let keys = gtk::EventControllerKey::new();
         let entry = screen.password.clone();
         let name_mode = show == Show::Name;
+        let weak = Rc::downgrade(&screen);
         keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                if let Some(screen) = weak.upgrade() {
+                    if screen.back_out() {
+                        return glib::Propagation::Stop;
+                    }
+                }
+            }
             if name_mode && key == gdk::Key::Escape {
                 entry.set_text("");
                 return glib::Propagation::Stop;
@@ -966,6 +981,7 @@ impl Screen {
         if index >= self.accounts.len() {
             return;
         }
+        self.back_out();
         self.selected.set(index);
         self.list_focus.set(index);
         self.chosen.set(true);
@@ -977,6 +993,7 @@ impl Screen {
     }
 
     fn clear_choice(self: &Rc<Self>) {
+        self.back_out();
         self.chosen.set(false);
         self.list_focus.set(self.selected.get());
         self.password.set_text("");
@@ -995,6 +1012,9 @@ impl Screen {
     }
 
     fn on_list_key(self: &Rc<Self>, key: gdk::Key) -> glib::Propagation {
+        if key == gdk::Key::Escape && self.back_out() {
+            return glib::Propagation::Stop;
+        }
         if self.show != Show::List {
             return glib::Propagation::Proceed;
         }
@@ -1065,11 +1085,79 @@ impl Screen {
 
     fn set_busy(&self, busy: bool) {
         self.password.set_sensitive(!busy);
-        self.name.set_sensitive(!busy);
+        // The name stays fixed until a check that is asking finishes.
+        self.name
+            .set_sensitive(!busy && self.asking.borrow().is_none());
+    }
+
+    /// Show a message from PAM, or why the check failed.
+    fn show_message(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.message.set_label(text);
+        self.message.set_visible(true);
+    }
+
+    /// Put the password field to a further prompt: a second factor, or a
+    /// new password.
+    fn ask_for(
+        &self,
+        label: &str,
+        visible: bool,
+        answers: std::sync::mpsc::Sender<Option<String>>,
+    ) {
+        *self.asking.borrow_mut() = Some(answers);
+        // Clearing the field hides the message; PAM's note about this
+        // prompt stays.
+        let shown = self.message.is_visible();
+        self.password.set_text("");
+        self.message.set_visible(shown);
+        self.password.set_visibility(visible);
+        self.password.set_input_purpose(if visible {
+            gtk::InputPurpose::FreeForm
+        } else {
+            gtk::InputPurpose::Password
+        });
+        self.password.set_placeholder_text(Some(label));
+        self.password
+            .set_secondary_icon_tooltip_text(Some("Continue"));
+        self.set_busy(false);
+        self.password.grab_focus();
+    }
+
+    /// Back to a plain password field.
+    fn reset_field(&self) {
+        self.asking.borrow_mut().take();
+        self.password.set_visibility(false);
+        self.password.set_input_purpose(gtk::InputPurpose::Password);
+        self.password.set_placeholder_text(Some(PASSWORD_HINT));
+        self.password
+            .set_secondary_icon_tooltip_text(Some("Sign In"));
+    }
+
+    /// Stops a check that is waiting for a further answer. Whether one was.
+    fn back_out(&self) -> bool {
+        let Some(answers) = self.asking.borrow_mut().take() else {
+            return false;
+        };
+        let _ = answers.send(None);
+        self.password.set_text("");
+        self.set_busy(true);
+        true
     }
 
     fn submit(self: &Rc<Self>) {
         if !self.password.is_sensitive() {
+            return;
+        }
+        let answers = self.asking.borrow_mut().take();
+        if let Some(answers) = answers {
+            let answer = self.password.text().to_string();
+            self.password.set_text("");
+            self.set_busy(true);
+            self.name.set_sensitive(false);
+            let _ = answers.send(Some(answer));
             return;
         }
         let user = match self.show {
@@ -1091,37 +1179,43 @@ impl Screen {
         let password = self.password.text().to_string();
         self.set_busy(true);
         let backend = self.backend;
+        let (events, inbox) = async_channel::unbounded();
+        let (answers, replies) = std::sync::mpsc::channel();
+        let who = user.clone();
+        std::thread::spawn(move || {
+            let mut worker = Worker {
+                events: events.clone(),
+                answers: replies,
+            };
+            let result = check(backend, &who, &password, &mut worker);
+            let _ = events.send_blocking(Event::Done(result));
+        });
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let who = user.clone();
-            let result = gio::spawn_blocking(move || match backend {
-                Backend::Greetd => greetd::login(&who, &password, &greetd::session_command()),
-                Backend::Pam => match pam::check(&who, &password) {
-                    Ok(true) => Ok(()),
-                    Ok(false) => Err(Failure::Auth),
-                    Err(e) => Err(Failure::Other(e)),
-                },
-                Backend::Demo => {
-                    std::thread::sleep(Duration::from_millis(300));
-                    if password == "elavo" {
-                        Ok(())
-                    } else {
-                        Err(Failure::Auth)
+            while let Ok(event) = inbox.recv().await {
+                let Some(screen) = weak.upgrade() else {
+                    break;
+                };
+                match event {
+                    Event::Info(text) | Event::Error(text) => screen.show_message(&text),
+                    Event::Secret(label) => screen.ask_for(&label, false, answers.clone()),
+                    Event::Visible(label) => screen.ask_for(&label, true, answers.clone()),
+                    Event::Done(result) => {
+                        screen.finish(result, &user);
+                        break;
                     }
                 }
-            })
-            .await
-            .unwrap_or_else(|_| Err(Failure::Other("the check stopped".into())));
-            if let Some(screen) = weak.upgrade() {
-                screen.finish(result, &user);
             }
         });
     }
 
     fn finish(&self, result: Result<(), Failure>, user: &str) {
+        self.reset_field();
         match result {
             Ok(()) => match (self.kind, self.backend) {
                 (Kind::Lock, _) => {
+                    self.set_busy(false);
+                    self.message.set_visible(false);
                     if let Some(f) = self.on_unlock.borrow().as_ref() {
                         f();
                     }
@@ -1138,15 +1232,12 @@ impl Screen {
                 self.set_busy(false);
                 self.password.set_text("");
                 self.password.grab_focus();
-                if let Failure::Other(text) = failure {
-                    let text = if text.is_empty() {
-                        "Could not sign in.".to_owned()
-                    } else {
-                        text
-                    };
-                    self.message.set_label(&text);
-                    self.message.set_visible(true);
-                }
+                let Some(text) = failure.text() else {
+                    // Backed out: no message and no shake.
+                    self.message.set_visible(false);
+                    return;
+                };
+                self.show_message(&text);
                 let field = self
                     .password
                     .parent()
@@ -1157,6 +1248,42 @@ impl Screen {
                 });
             }
         }
+    }
+}
+
+/// The check itself, on the worker thread.
+fn check(backend: Backend, user: &str, password: &str, talk: &mut dyn Talk) -> Result<(), Failure> {
+    match backend {
+        Backend::Greetd => greetd::sign_in(user, password, &greetd::session_command(), talk),
+        Backend::Pam => pam::unlock(user, password, talk),
+        Backend::Demo => demo_check(password, talk),
+    }
+}
+
+/// `--demo`: "elavo" opens; "elavo-2fa" also asks for the code 123456;
+/// "elavo-expired" asks for a new password twice.
+fn demo_check(password: &str, talk: &mut dyn Talk) -> Result<(), Failure> {
+    std::thread::sleep(Duration::from_millis(300));
+    match password {
+        "elavo" => Ok(()),
+        "elavo-2fa" => match talk.secret("Second Factor: ") {
+            Some(code) if code == "123456" => Ok(()),
+            Some(_) => Err(Failure::Auth),
+            None => Err(Failure::Cancelled),
+        },
+        "elavo-expired" => {
+            talk.info("Password expired. Change your password now.");
+            let new = talk.secret("New password: ").ok_or(Failure::Cancelled)?;
+            let again = talk
+                .secret("Retype new password: ")
+                .ok_or(Failure::Cancelled)?;
+            if new == again && !new.is_empty() {
+                Ok(())
+            } else {
+                Err(Failure::Other("Sorry, passwords do not match.".into()))
+            }
+        }
+        _ => Err(Failure::Auth),
     }
 }
 

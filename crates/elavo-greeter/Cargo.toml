@@ -1,11 +1,12 @@
 [package]
 name = "elavo-greeter"
-version = "0.3.4"
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-channel.workspace = true
 gtk.workspace = true
 gtk4-session-lock.workspace = true
 libc.workspace = true

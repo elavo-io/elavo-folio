@@ -65,7 +65,7 @@ scripts/dev-run elavo-greeter --demo --lock
 scripts/dev-run elavo-greeter --demo --demo-people 3
 ```
 
-`--demo` draws the login or lock screen in an ordinary window and accepts the password `elavo`. Nothing signs in or unlocks. `--demo-people N` adds up to eight made-up people to the login list, to check the row with several accounts.
+`--demo` draws the login or lock screen in an ordinary window and accepts the password `elavo`. Nothing signs in or unlocks. `elavo-2fa` then asks for a second factor (`123456`), and `elavo-expired` asks for a new password twice, to check the prompts directory accounts get. `--demo-people N` adds up to eight made-up people to the login list, to check the row with several accounts.
 
 Test the real lock only in a nested labwc with an empty config, so its autostart does not start a second set of session services:
 
@@ -82,7 +82,15 @@ s=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1/user/self
 busctl call org.freedesktop.login1 "$s" org.freedesktop.login1.Session SetLockedHint b false
 ```
 
-Unlocking needs `/etc/pam.d/elavo-lock`, which the image installs.
+Unlocking needs `/etc/pam.d/elavo-lock`, and changing an expired password at login needs `/etc/pam.d/elavo-passwd`; the image installs both. They use the system's password-auth stack, so they work for directory accounts (sssd) as well as local ones.
+
+To try the PAM side without a screen, on a test machine:
+
+```bash
+ELAVO_PAM_USER=ada ELAVO_PAM_PASSWORD=... cargo test -p elavo-greeter -- --ignored --nocapture try_an_account
+```
+
+`ELAVO_PAM_ANSWERS='a|b'` answers later prompts in order, and `ELAVO_PAM_CHANGE=1` runs the login password change instead of the unlock.
 
 `ELAVO_GREETER_TRACE=1` prints each startup step's time on stderr, from process start to the first painted frame. A `--lock` child counts from its parent's start.
 
