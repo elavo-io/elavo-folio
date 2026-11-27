@@ -182,9 +182,10 @@ fn follow_color_scheme() {
         let desktop = desktop.clone();
         move || {
             if let Some(settings) = gtk::Settings::default() {
-                settings.set_gtk_application_prefer_dark_theme(scheme_is_dark(
-                    desktop.string("color-scheme").as_str(),
-                ));
+                set_gtk_dark(
+                    &settings,
+                    scheme_is_dark(desktop.string("color-scheme").as_str()),
+                );
             }
         }
     };
@@ -1790,6 +1791,26 @@ fn main() -> glib::ExitCode {
         glib::ExitCode::SUCCESS
     });
     app.run()
+}
+
+/// Load the light or dark sheet for `dark`. GTK 4.24 picks the sheet from
+/// `gtk-interface-color-scheme`, and `gtk-application-prefer-dark-theme`
+/// reloads the sheet before it updates that value, so one call alone loads
+/// the sheet of the previous scheme. Set the scheme first where GTK has it,
+/// then set the old property twice so the reload sees the new scheme. The
+/// theme name is left alone so accent changes still reach the app.
+fn set_gtk_dark(settings: &gtk::Settings, dark: bool) {
+    let scheme = settings
+        .find_property("gtk-interface-color-scheme")
+        .and_then(|pspec| {
+            let class = gtk::glib::EnumClass::with_type(pspec.value_type())?;
+            class.to_value_by_nick(if dark { "dark" } else { "light" })
+        });
+    if let Some(value) = &scheme {
+        settings.set_property_from_value("gtk-interface-color-scheme", value);
+    }
+    settings.set_gtk_application_prefer_dark_theme(dark);
+    settings.set_gtk_application_prefer_dark_theme(dark);
 }
 
 #[cfg(test)]
